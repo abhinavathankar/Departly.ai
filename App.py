@@ -7,7 +7,6 @@ from dateutil import parser
 
 # --- SECURE API CONFIGURATION ---
 try:
-    # Pulling keys from Streamlit Cloud Secrets (Settings -> Secrets)
     AIRLABS_KEY = st.secrets["AIRLABS_KEY"]
     GOOGLE_MAPS_KEY = st.secrets["GOOGLE_MAPS_KEY"]
     GEMINI_KEY = st.secrets["GEMINI_KEY"]
@@ -21,6 +20,7 @@ client = genai.Client(api_key=GEMINI_KEY)
 # --- FUNCTIONS ---
 
 def get_flight_data(flight_iata):
+    """Fetches flight schedule and airport details from AirLabs"""
     url = f"https://airlabs.co/api/v9/schedules?flight_iata={flight_iata}&api_key={AIRLABS_KEY}"
     try:
         response = requests.get(url).json()
@@ -31,6 +31,7 @@ def get_flight_data(flight_iata):
     return None
 
 def get_travel_metrics(origin, airport_code):
+    """Fetches real-time traffic data from Google Maps"""
     url = "https://maps.googleapis.com/maps/api/distancematrix/json"
     params = {
         "origins": origin,
@@ -65,11 +66,10 @@ st.markdown("""
 st.title("✈️ Departly.ai")
 st.write("Precision travel planning with Gemini 3 Intelligence.")
 
-# Model Selector in Sidebar
+# Model Selector
 AVAILABLE_MODELS = ['gemini-3-flash-preview', 'gemini-2.5-flash', 'gemini-1.5-flash']
 selected_model = st.sidebar.selectbox("AI Model", AVAILABLE_MODELS, index=0)
 
-# User Inputs
 col1, col2 = st.columns(2)
 with col1:
     flight_input = st.text_input("IndiGo Flight", value="6E2134")
@@ -80,7 +80,7 @@ if st.button("Calculate My Safe Departure", use_container_width=True):
     if not home_input or not flight_input:
         st.warning("Please fill in both fields.")
     else:
-        with st.spinner(f"Processing with {selected_model}..."):
+        with st.spinner(f"Consulting {selected_model}..."):
             flight = get_flight_data(flight_input)
             
             if flight:
@@ -95,51 +95,62 @@ if st.button("Calculate My Safe Departure", use_container_width=True):
                     # 3. Buffer Logic: 60m Sec + 15m Queue + 30m Road = 105 mins
                     safety_buffer_mins = 105 
                     total_needed_seconds = traffic['seconds'] + (safety_buffer_mins * 60)
-                    leave_dt = boarding_dt - timedelta(seconds=total_transit_seconds if 'total_transit_seconds' in locals() else total_needed_seconds)
+                    leave_dt = boarding_dt - timedelta(seconds=total_needed_seconds)
                     
                     # --- DISPLAY ---
                     st.balloons()
                     st.success(f"### 🚪 Leave Home by: **{leave_dt.strftime('%I:%M %p')}**")
                     
-                    st.write(f"Destination: **{flight['dep_iata']} Airport** | Distance: **{traffic['distance']}**")
+                    # Fetching richer details for the prompt
+                    origin_city = flight.get('dep_city', flight['dep_iata'])
+                    dest_city = flight.get('arr_city', flight['arr_iata'])
+                    terminal = flight.get('dep_terminal', 'Main')
+
+                    st.write(f"Route: **{origin_city}** to **{dest_city}** | Terminal: **{terminal}**")
 
                     m1, m2, m3 = st.columns(3)
                     m1.metric("Takeoff", takeoff_dt.strftime("%I:%M %p"))
                     m2.metric("Boarding", boarding_dt.strftime("%I:%M %p"))
                     m3.metric("Live Traffic", traffic['text'])
 
-                    # --- GEMINI 3 AI ADVISORY ---
+                    # --- ENRICHED GEMINI 3 PROMPT ---
                     st.divider()
-                    st.subheader(f"🤖 AI Advisory ({selected_model})")
+                    st.subheader(f"🤖 Luxury Travel Advisory")
                     
                     prompt = f"""
-                    You are a luxury travel assistant. 
-                    Flight: {flight_input} from {flight['dep_iata']}.
-                    Departure: {takeoff_dt.strftime('%I:%M %p')}.
-                    Traffic: {traffic['text']}.
-                    Must Leave Home By: {leave_dt.strftime('%I:%M %p')}.
-                    
-                    Explain why this timing is safe. Mention the specific buffers: 1hr security, 15m queue, and 30m travel. 
-                    Structure the response with bold headers.
+                    You are an elite luxury travel assistant for Departly.ai. 
+                    Your tone is professional, reassuring, and detailed.
+
+                    **TRIP DETAILS:**
+                    - Flight: {flight_input} (IndiGo)
+                    - Route: {origin_city} to {dest_city}
+                    - Terminal: {terminal}
+                    - Takeoff: {takeoff_dt.strftime('%I:%M %p')}
+                    - Boarding: {boarding_dt.strftime('%I:%M %p')}
+
+                    **GROUND LOGISTICS:**
+                    - Traffic: {traffic['text']}
+                    - Recommended Departure: {leave_dt.strftime('%I:%M %p')}
+
+                    **TASK:**
+                    Explain why this timing is the 'Golden Window' for a stress-free trip. 
+                    Mention the 1-hour security, 15m queue buffer, and 30m travel buffer.
+                    Structure with **Bold Headers**.
                     """
                     
                     try:
                         response = client.models.generate_content(
                             model=selected_model,
                             contents=prompt,
-                            config=types.GenerateContentConfig(
-                                temperature=0.7,
-                                max_output_tokens=500
-                            )
+                            config=types.GenerateContentConfig(temperature=0.7)
                         )
                         st.info(response.text)
                     except Exception as e:
-                        st.warning("AI Advisory could not be generated, but your schedule is ready above.")
-                        st.sidebar.error(f"AI Error: {e}")
+                        st.warning("AI Advisory unavailable. Please follow the times above.")
                 else:
-                    st.error("Address not found by Google Maps.")
+                    st.error("Google Maps could not calculate the route.")
             else:
-                st.error("Flight not found in AirLabs database.")
+                st.error("Flight not found. Verify the number.")
 
 st.markdown("---")
-st.caption("2025 Departly.ai | Powered by Google Gemini 3 & Google Maps.")
+st.caption("2025 Departly.ai | Powered by Gemini 3 & Google Maps.")
