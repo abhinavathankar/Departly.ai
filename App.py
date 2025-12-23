@@ -64,7 +64,7 @@ st.markdown("""
     .main { text-align: center; }
     .stMetric { background-color: #f0f2f6; padding: 10px; border-radius: 10px; }
     </style>
-    """, unsafe_allow_name=True)
+    """, unsafe_allow_html=True)
 
 st.title("✈️ Departly.ai")
 st.subheader("Smart AI Departure Assistant")
