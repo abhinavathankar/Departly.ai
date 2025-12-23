@@ -6,8 +6,8 @@ from dateutil import parser
 
 # --- API CONFIGURATION ---
 # Replace these with your actual keys
-AIRLABS_KEY = "YOUR_AIRLABS_API_KEY"
-GOOGLE_MAPS_KEY = "YOUR_GOOGLE_MAPS_KEY"
+AIRLABS_KEY = "AIRLAB_KEY"
+GOOGLE_MAPS_KEY = "GOOGLE_MAP_KEY"
 GEMINI_KEY = "YOUR_GEMINI_API_KEY"
 
 # --- AI SETUP ---
