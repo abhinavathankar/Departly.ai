@@ -52,9 +52,9 @@ def get_travel_metrics(origin, airport_code):
     return None
 
 # --- STREAMLIT UI ---
-st.set_page_config(page_title="Buffer.ai", page_icon="✈️", layout="centered")
+st.set_page_config(page_title="Departly.ai", page_icon="✈️", layout="centered")
 
-st.title("✈️ Buffer.ai")
+st.title("✈️ Departly.ai")
 st.subheader("Smart Departure Assistant")
 st.markdown("---")
 
