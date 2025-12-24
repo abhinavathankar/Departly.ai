@@ -4,6 +4,7 @@ from google import genai
 from google.genai import types
 from datetime import datetime, timedelta
 from dateutil import parser
+import re
 
 # --- SECURE API CONFIGURATION ---
 try:
@@ -19,9 +20,12 @@ client = genai.Client(api_key=GEMINI_KEY)
 
 # --- FUNCTIONS ---
 
-def get_flight_data(flight_iata):
-    """Fetches flight schedule and airport details from AirLabs"""
-    url = f"https://airlabs.co/api/v9/schedules?flight_iata={flight_iata}&api_key={AIRLABS_KEY}"
+def get_flight_data(flight_input):
+    """Handles spaces and fetches flight details from AirLabs"""
+    # Remove all spaces from the input (e.g., 'AI 2222' -> 'AI2222')
+    clean_iata = flight_input.replace(" ", "").upper()
+    
+    url = f"https://airlabs.co/api/v9/schedules?flight_iata={clean_iata}&api_key={AIRLABS_KEY}"
     try:
         response = requests.get(url).json()
         if "response" in response and response["response"]:
@@ -72,7 +76,8 @@ selected_model = st.sidebar.selectbox("AI Model", AVAILABLE_MODELS, index=0)
 
 col1, col2 = st.columns(2)
 with col1:
-    flight_input = st.text_input("IndiGo Flight", value="6E2134")
+    # 1. UPDATED UI LABEL
+    flight_input = st.text_input("Flight Number", value="6E 2134", help="e.g. AI 2222, 6E 2134, EK 502")
 with col2:
     home_input = st.text_input("Pickup Point", placeholder="e.g., Mahaveer Tuscan, Hoodi")
 
@@ -81,27 +86,22 @@ if st.button("Calculate My Safe Departure", use_container_width=True):
         st.warning("Please fill in both fields.")
     else:
         with st.spinner(f"Consulting {selected_model}..."):
+            # 3. INTERNALLY HANDLES SPACES
             flight = get_flight_data(flight_input)
             
             if flight:
-                # 1. Timeline Logic
                 takeoff_dt = parser.parse(flight['dep_time'])
                 boarding_dt = takeoff_dt - timedelta(minutes=45)
-                
-                # 2. Traffic Logic
                 traffic = get_travel_metrics(home_input, flight['dep_iata'])
                 
                 if traffic:
-                    # 3. Buffer Logic: 60m Sec + 15m Queue + 30m Road = 105 mins
                     safety_buffer_mins = 105 
                     total_needed_seconds = traffic['seconds'] + (safety_buffer_mins * 60)
                     leave_dt = boarding_dt - timedelta(seconds=total_needed_seconds)
                     
-                    # --- DISPLAY ---
                     st.balloons()
                     st.success(f"### 🚪 Leave Home by: **{leave_dt.strftime('%I:%M %p')}**")
                     
-                    # Fetching richer details for the prompt
                     origin_city = flight.get('dep_city', flight['dep_iata'])
                     dest_city = flight.get('arr_city', flight['arr_iata'])
                     terminal = flight.get('dep_terminal', 'Main')
@@ -113,29 +113,19 @@ if st.button("Calculate My Safe Departure", use_container_width=True):
                     m2.metric("Boarding", boarding_dt.strftime("%I:%M %p"))
                     m3.metric("Live Traffic", traffic['text'])
 
-                    # --- ENRICHED GEMINI 3 PROMPT ---
+                    # --- 2. UPDATED SHORT PROMPT (3 PARAS, 3 LINES EACH) ---
                     st.divider()
                     st.subheader(f"🤖 Luxury Travel Advisory")
                     
                     prompt = f"""
-                    You are an elite luxury travel assistant for Departly.ai. 
-                    Your tone is professional, reassuring, and detailed.
+                    You are an elite luxury travel assistant. 
+                    Trip: {flight_input.upper()} from {flight['dep_iata']}. Takeoff: {takeoff_dt.strftime('%I:%M %p')}. Leave home: {leave_dt.strftime('%I:%M %p')}.
 
-                    **TRIP DETAILS:**
-                    - Flight: {flight_input} (IndiGo)
-                    - Route: {origin_city} to {dest_city}
-                    - Terminal: {terminal}
-                    - Takeoff: {takeoff_dt.strftime('%I:%M %p')}
-                    - Boarding: {boarding_dt.strftime('%I:%M %p')}
-
-                    **GROUND LOGISTICS:**
-                    - Traffic: {traffic['text']}
-                    - Recommended Departure: {leave_dt.strftime('%I:%M %p')}
-
-                    **TASK:**
-                    Explain why this timing is the 'Golden Window' for a stress-free trip. 
-                    Mention the 1-hour security, 15m queue buffer, and 30m travel buffer.
-                    Structure with **Bold Headers**.
+                    STRICT FORMATTING RULE: 
+                    Write exactly 3 paragraphs. Each paragraph must be exactly 3 lines long.
+                    Paragraph 1: Welcome the user and explain the 'Golden Window' for departure.
+                    Paragraph 2: Detail the 1hr security, 15m queue, and 30m travel buffers.
+                    Paragraph 3: Reassure them of a stress-free journey and close professionally.
                     """
                     
                     try:
@@ -150,7 +140,7 @@ if st.button("Calculate My Safe Departure", use_container_width=True):
                 else:
                     st.error("Google Maps could not calculate the route.")
             else:
-                st.error("Flight not found. Verify the number.")
+                st.error("Flight not found. Ensure the Carrier Code and Number are correct.")
 
 st.markdown("---")
 st.caption("2025 Departly.ai | Powered by Gemini 3 & Google Maps.")
