@@ -77,7 +77,7 @@ selected_model = st.sidebar.selectbox("AI Model", AVAILABLE_MODELS, index=0)
 col1, col2 = st.columns(2)
 with col1:
     # UPDATED: Empty value and '6E 2134' set as the placeholder
-    flight_input = st.text_input("Flight Number", value="", placeholder="e.g. 6E 2134, AI 2222", help="Enter Carrier Code and Number")
+    flight_input = st.text_input("Flight Number", value="", placeholder="e.g. 6E 6021", help="Enter Carrier Code and Number")
 with col2:
     home_input = st.text_input("Pickup Point", placeholder="e.g., Mahaveer Tuscan, Hoodi")
 
