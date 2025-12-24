@@ -22,7 +22,7 @@ client = genai.Client(api_key=GEMINI_KEY)
 
 def get_flight_data(flight_input):
     """Handles spaces and fetches flight details from AirLabs"""
-    # Remove all spaces from the input (e.g., 'AI 2222' -> 'AI2222')
+    # Remove all spaces and convert to uppercase (e.g., 'ai 2222' -> 'AI2222')
     clean_iata = flight_input.replace(" ", "").upper()
     
     url = f"https://airlabs.co/api/v9/schedules?flight_iata={clean_iata}&api_key={AIRLABS_KEY}"
@@ -76,17 +76,17 @@ selected_model = st.sidebar.selectbox("AI Model", AVAILABLE_MODELS, index=0)
 
 col1, col2 = st.columns(2)
 with col1:
-    # 1. UPDATED UI LABEL
-    flight_input = st.text_input("Flight Number", help="e.g. AI 2222, 6E 2134, EK 502")
+    # UPDATED: Empty value and '6E 2134' set as the placeholder
+    flight_input = st.text_input("Flight Number", value="", placeholder="e.g. 6E 2134, AI 2222", help="Enter Carrier Code and Number")
 with col2:
     home_input = st.text_input("Pickup Point", placeholder="e.g., Mahaveer Tuscan, Hoodi")
 
 if st.button("Calculate My Safe Departure", use_container_width=True):
     if not home_input or not flight_input:
-        st.warning("Please fill in both fields.")
+        st.warning("Please enter both a Flight Number and a Pickup Point.")
     else:
         with st.spinner(f"Consulting {selected_model}..."):
-            # 3. INTERNALLY HANDLES SPACES
+            # Internal logic cleans the spaces automatically
             flight = get_flight_data(flight_input)
             
             if flight:
@@ -95,6 +95,7 @@ if st.button("Calculate My Safe Departure", use_container_width=True):
                 traffic = get_travel_metrics(home_input, flight['dep_iata'])
                 
                 if traffic:
+                    # Logic: 60m Sec + 15m Queue + 30m Road = 105 mins
                     safety_buffer_mins = 105 
                     total_needed_seconds = traffic['seconds'] + (safety_buffer_mins * 60)
                     leave_dt = boarding_dt - timedelta(seconds=total_needed_seconds)
@@ -113,7 +114,7 @@ if st.button("Calculate My Safe Departure", use_container_width=True):
                     m2.metric("Boarding", boarding_dt.strftime("%I:%M %p"))
                     m3.metric("Live Traffic", traffic['text'])
 
-                    # --- 2. UPDATED SHORT PROMPT (3 PARAS, 3 LINES EACH) ---
+                    # --- UPDATED SHORT PROMPT (3 PARAS, 3 LINES EACH) ---
                     st.divider()
                     st.subheader(f"🤖 Luxury Travel Advisory")
                     
@@ -136,11 +137,11 @@ if st.button("Calculate My Safe Departure", use_container_width=True):
                         )
                         st.info(response.text)
                     except Exception as e:
-                        st.warning("AI Advisory unavailable. Please follow the times above.")
+                        st.warning("AI Advisory unavailable. Please follow the calculated times above.")
                 else:
-                    st.error("Google Maps could not calculate the route.")
+                    st.error("Google Maps could not calculate the route. Check your Pickup Point.")
             else:
-                st.error("Flight not found. Ensure the Carrier Code and Number are correct.")
+                st.error("Flight not found. Please verify the code (e.g., AI 2222).")
 
 st.markdown("---")
 st.caption("2025 Departly.ai | Powered by Gemini 3 & Google Maps.")
