@@ -8,7 +8,7 @@ from datetime import datetime, timedelta
 from dateutil import parser
 
 # --- 1. CONFIGURATION ---
-st.set_page_config(page_title="Departly.ai", page_icon="✈️", layout="centered")
+st.set_page_config(page_title="Departly.ai", page_icon="✈️", layout="wide")
 
 # --- 2. HTTP CLIENT ---
 class FirestoreREST:
@@ -36,10 +36,8 @@ class FirestoreREST:
         auth_req = google.auth.transport.requests.Request()
         self.creds.refresh(auth_req)
         token = self.creds.token
-        
         url = f"{self.base_url}:runQuery"
         headers = {"Authorization": f"Bearer {token}"}
-        
         payload = {
             "structuredQuery": {
                 "from": [{"collectionId": "itineraries_knowledge_base"}],
@@ -53,7 +51,6 @@ class FirestoreREST:
                 "limit": 10
             }
         }
-        
         try:
             resp = requests.post(url, headers=headers, json=payload, timeout=5)
             if resp.status_code == 200:
@@ -79,44 +76,20 @@ try:
 except Exception as e:
     st.error(f"Service Init Error: {e}")
 
-# --- MODEL UPDATE: Prioritizing Gemini 3 Flash Preview ---
-AVAILABLE_MODELS = ['gemini-2.0-flash-exp', 'gemini-1.5-flash', 'gemini-1.5-pro']
-
+# --- MODEL SETTINGS ---
+AVAILABLE_MODELS = ['gemini-3-flash-preview', 'gemini-1.5-flash', 'gemini-1.5-pro']
 INDIAN_AIRLINES = {
-    "IndiGo": "6E",
-    "Air India": "AI",
-    "Vistara": "UK",
-    "SpiceJet": "SG",
-    "Air India Express": "IX",
-    "Akasa Air": "QP",
-    "Alliance Air": "9I",
-    "Star Air": "S5",
-    "Fly91": "IC"
+    "IndiGo": "6E", "Air India": "AI", "Vistara": "UK", 
+    "SpiceJet": "SG", "Air India Express": "IX", "Akasa Air": "QP",
+    "Alliance Air": "9I", "Star Air": "S5", "Fly91": "IC"
 }
 CITY_VARIANTS = {
-    "DEL": ["Delhi", "New Delhi"],
-    "BLR": ["Bengaluru", "Bangalore"],
-    "BOM": ["Mumbai"],
-    "MAA": ["Chennai"],
-    "HYD": ["Hyderabad"],
-    "GOI": ["Goa"],
-    "JAI": ["Jaipur"],
-    "CCU": ["Kolkata"]
+    "DEL": ["Delhi", "New Delhi"], "BLR": ["Bengaluru", "Bangalore"],
+    "BOM": ["Mumbai"], "MAA": ["Chennai"], "HYD": ["Hyderabad"],
+    "GOI": ["Goa"], "JAI": ["Jaipur"], "CCU": ["Kolkata"]
 }
 
-def get_rag_data_http(target_cities):
-    all_docs = []
-    for city in target_cities:
-        clean_city = city.strip()
-        docs = db_http.query_city(clean_city)
-        for d in docs:
-            if d.get('Name'):
-                entry = (f"• {d.get('Name')} | Type: {d.get('Type')} | "
-                         f"Fee: {d.get('Entrance Fee in INR')} | "
-                         f"Time: {d.get('time needed to visit in hrs')}h")
-                all_docs.append(entry)
-    return all_docs
-
+# --- 3. HELPER FUNCTIONS ---
 def get_flight_data(iata_code):
     clean_iata = iata_code.replace(" ", "").upper()
     url = f"https://airlabs.co/api/v9/schedules?flight_iata={clean_iata}&api_key={st.secrets['AIRLABS_KEY']}"
@@ -125,15 +98,9 @@ def get_flight_data(iata_code):
         res_json = res.json()
         if "response" in res_json and res_json["response"]:
             f_data = res_json["response"][0]
-            
-            # ORIGIN CODE (For Traffic)
             f_data['origin_code'] = f_data.get('dep_iata') or f_data.get('dep_icao')
-            
-            # DESTINATION CODE (For Itinerary)
             dest_code = f_data.get('arr_iata') or f_data.get('arr_icao')
             f_data['dest_code'] = dest_code
-            
-            # Targets for RAG (Based on Destination)
             if dest_code in CITY_VARIANTS:
                 f_data['targets'] = CITY_VARIANTS[dest_code]
                 f_data['display'] = CITY_VARIANTS[dest_code][0]
@@ -142,27 +109,16 @@ def get_flight_data(iata_code):
                 f_data['targets'] = [city_from_api]
                 f_data['display'] = city_from_api
             return f_data
-        elif "error" in res_json:
-            st.error(f"Flight API Error: {res_json['error'].get('message')}")
-    except Exception as e:
-        st.error(f"Connection Error: {e}")
+    except: pass
     return None
 
 def get_traffic(pickup_address, target_airport_code):
-    """
-    Calculates traffic from Pickup Address -> Origin Airport
-    """
     destination_query = f"{target_airport_code} Airport"
-    
     url = "https://maps.googleapis.com/maps/api/distancematrix/json"
     params = {
-        "origins": pickup_address,
-        "destinations": destination_query, 
-        "mode": "driving", 
-        "departure_time": "now", 
-        "key": st.secrets["GOOGLE_MAPS_KEY"]
+        "origins": pickup_address, "destinations": destination_query, 
+        "mode": "driving", "departure_time": "now", "key": st.secrets["GOOGLE_MAPS_KEY"]
     }
-    
     try:
         data = requests.get(url, params=params, timeout=5).json()
         if "rows" in data and data["rows"]:
@@ -172,99 +128,83 @@ def get_traffic(pickup_address, target_airport_code):
     except: pass
     return {"sec": 5400, "txt": "1h 30m (Est)"}
 
-# --- UI ---
-st.title("✈️ Departly.ai")
-st.write("Indian Airlines Departure Planner")
-
-c_airline, c_number = st.columns([1, 1])
-with c_airline:
+# --- 4. SIDEBAR LAYOUT ---
+with st.sidebar:
+    st.header("📍 Trip Settings")
     airline_name = st.selectbox("Select Airline", list(INDIAN_AIRLINES.keys()))
     airline_code = INDIAN_AIRLINES[airline_name]
-with c_number:
     flight_num = st.text_input("Flight Number", placeholder="e.g. 6433")
+    p_in = st.text_input("Pickup Point", placeholder="e.g. Hoodi, Bangalore")
+    
+    st.divider()
+    st.header("🤖 AI Settings")
+    # UPDATED: Selectbox now correctly defaults to gemini-3-flash-preview
+    selected_model = st.selectbox("Itinerary Model", AVAILABLE_MODELS, index=0)
+    days = st.slider("Trip Duration (Days)", 1, 7, 3)
+    
+    calc_button = st.button("Calculate Journey", type="primary", use_container_width=True)
 
-p_in = st.text_input("Pickup Point", placeholder="e.g. Hoodi, Bangalore")
+# --- 5. MAIN UI ---
+st.title("✈️ Departly.ai")
 
 if 'flight_info' not in st.session_state:
     st.session_state.flight_info = None
 
-if st.button("Calculate Journey", type="primary", use_container_width=True):
-    if not flight_num:
-        st.warning("Please enter a flight number.")
+if calc_button:
+    if not (flight_num and p_in):
+        st.warning("Please enter both flight number and pickup point in the sidebar.")
     else:
         full_flight_code = f"{airline_code}{flight_num}"
-        with st.spinner(f"Searching for {full_flight_code}..."):
+        with st.spinner(f"Analyzing {full_flight_code}..."):
             flight = get_flight_data(full_flight_code)
-            
             if flight:
                 st.session_state.flight_info = flight
                 
-                # --- DASHBOARD ---
-                st.divider()
-                st.subheader(f"🎫 Ticket: {flight.get('flight_iata')}")
-                
+                # Ticket Dashboard
+                st.subheader(f"🎫 Flight Dashboard: {flight.get('flight_iata')}")
                 t1, t2, t3, t4 = st.columns(4)
-                t1.metric("Airline", airline_name)
-                t2.metric("Date", flight.get('dep_time').split()[0])
-                t3.metric("Origin", flight.get('dep_iata'))
-                t4.metric("Dest", flight.get('arr_iata'))
-                st.info(f"🛫 **Departs:** {flight.get('dep_time')}  |  🛬 **Arrives:** {flight.get('arr_time')}")
-                
-                with st.expander("🔍 See Raw API Data"):
-                    st.json(flight)
+                t1.metric("Date", flight.get('dep_time').split()[0])
+                t2.metric("Route", f"{flight.get('dep_iata')} ➝ {flight.get('arr_iata')}")
+                t3.metric("Departs", parser.parse(flight['dep_time']).strftime('%I:%M %p'))
+                t4.metric("Arrives", parser.parse(flight['arr_time']).strftime('%I:%M %p'))
 
-                # --- CORRECTED TRAFFIC LOGIC ---
-                # Calculate drive to ORIGIN airport (Where you board)
+                # Traffic Calculation to ORIGIN
                 traffic = get_traffic(p_in, flight['origin_code'])
-                
                 takeoff_dt = parser.parse(flight['dep_time'])
                 
-                # Formula: Traffic + 45m Boarding + 30m Security/Bags
-                boarding_sec = 45 * 60 
-                security_sec = 30 * 60
-                total_buffer_sec = traffic['sec'] + boarding_sec + security_sec
-                
+                # Math: Traffic + 45m Boarding + 30m Security
+                total_buffer_sec = traffic['sec'] + (45 * 60) + (30 * 60)
                 leave_dt = takeoff_dt - timedelta(seconds=total_buffer_sec)
                 
                 st.success(f"### 🚪 Leave Home by: **{leave_dt.strftime('%I:%M %p')}**")
                 
-                # Breakdown Panel
-                c1, c2, c3, c4 = st.columns(4)
-                c1.metric("Drive To", f"{flight['origin_code']} Airport")
-                c2.metric("Traffic", traffic['txt'])
-                c3.metric("Boarding", "45 mins")
-                c4.metric("Security", "30 mins")
-
+                c1, c2, c3 = st.columns(3)
+                c1.metric("Traffic to Airport", traffic['txt'])
+                c2.metric("Security & Bags", "30 mins")
+                c3.metric("Boarding Gate", "45 mins")
             else:
-                st.error(f"Flight {full_flight_code} not found.")
+                st.error("Flight not found. Please re-check the number in the sidebar.")
 
-# --- ITINERARY ---
+# --- 6. ITINERARY SECTION ---
 if st.session_state.flight_info:
     st.divider()
-    # Itinerary uses DESTINATION targets
     targets = st.session_state.flight_info['targets']
     display = st.session_state.flight_info['display']
-    st.subheader(f"🗺️ Plan Your Trip to {display}")
+    st.subheader(f"🗺️ {days}-Day Itinerary for {display}")
     
-    c1, c2 = st.columns([1, 2])
-    with c1: days = st.slider("Duration (Days)", 1, 7, 3)
-    with c2: 
-        # Default to index 0 (gemini-3-flash-preview)
-        selected_model = st.selectbox("AI Model", AVAILABLE_MODELS, index=0)
-    
-    if st.button("Generate Verified Itinerary", use_container_width=True):
-        with st.spinner(f"Querying Knowledge Base for {display}..."):
-            rag_docs = get_rag_data_http(targets)
-            with st.expander(f"📚 Found {len(rag_docs)} Verified Places"):
-                st.write(rag_docs)
+    if st.button("Generate Plan with Gemini 3", use_container_width=True):
+        with st.spinner(f"Using {selected_model} to plan..."):
+            rag_docs = []
+            for city in targets:
+                rag_docs.extend(db_http.query_city(city.strip()))
+            
             if rag_docs:
-                context = "\n".join(rag_docs)
-                prompt = f"Create a {days}-day itinerary for {display} using only:\n{context}"
+                context = "\n".join([f"• {d.get('Name')} ({d.get('Type')})" for d in rag_docs])
+                prompt = f"Create a {days}-day itinerary for {display} using only this data:\n{context}"
                 try:
                     res = client.models.generate_content(model=selected_model, contents=prompt)
-                    st.markdown("### ✨ Your Verified Itinerary")
                     st.markdown(res.text)
                 except Exception as e:
                     st.error(f"AI Error: {e}")
             else:
-                st.warning(f"No database records found for {display}.")
+                st.warning("No database records found for this city.")
