@@ -1,5 +1,6 @@
 import streamlit as st
 import requests
+import json
 import firebase_admin
 from firebase_admin import credentials, firestore
 from google import genai
@@ -7,49 +8,49 @@ from google.genai import types
 from datetime import datetime, timedelta
 from dateutil import parser
 
-# --- 1. INITIALIZATION ---
-# Initialize Firebase with the Service Account Key
+# --- 1. SECURE FIREBASE & AI INITIALIZATION ---
 if not firebase_admin._apps:
-    cred = credentials.Certificate("serviceAccountKey.json")
-    firebase_admin.initialize_app(cred)
-db = firestore.client()
+    try:
+        # Pulls the JSON string from Streamlit Secrets (FIREBASE_KEY)
+        key_dict = json.loads(st.secrets["FIREBASE_KEY"])
+        cred = credentials.Certificate(key_dict)
+        firebase_admin.initialize_app(cred)
+    except Exception as e:
+        st.error(f"Firebase Init Error: {e}")
+        st.stop()
 
-# Initialize Gemini AI Client using Streamlit Secrets
+db = firestore.client()
 client = genai.Client(api_key=st.secrets["GEMINI_KEY"])
 
 # --- 2. RAG HELPER FUNCTION ---
 def get_itinerary_context(city_name):
-    """Retrieves place data from Firestore with error handling and case normalization"""
-    # Force Title Case to match CSV format (e.g., 'delhi' -> 'Delhi')
+    """Retrieves local attraction data from Firestore"""
+    # Normalize city name to Title Case (e.g., 'delhi' -> 'Delhi')
     formatted_city = city_name.strip().title()
     
     try:
-        # Query the collection broadly by City
-        # Added a timeout to prevent the UI from 'circling' indefinitely
+        # Querying the collection broadly by the 'City' field
         docs = db.collection("itineraries_knowledge_base").where("City", "==", formatted_city).get(timeout=10)
         
         context_data = []
         for doc in docs:
             d = doc.to_dict()
-            # Use .get() to handle missing fields in specific CSV rows safely
-            name = d.get('Name', 'Unknown Attraction')
-            sig = d.get('Significance', 'Cultural site')
-            fee = d.get('Entrance Fee in INR', 'Check locally')
-            time_req = d.get('time needed to visit in hrs', '2')
-            best_time = d.get('Best Time to visit', 'Morning/Evening')
-            
-            context_data.append(
-                f"- {name}: {sig}. Fee: {fee} INR. Duration: {time_req} hrs. Best time: {best_time}."
+            # Safe data extraction using .get() to handle missing CSV cells
+            place_info = (
+                f"- {d.get('Name')}: {d.get('Significance')}. "
+                f"Fee: {d.get('Entrance Fee in INR')} INR. "
+                f"Visit Duration: {d.get('time needed to visit in hrs')} hrs. "
+                f"Best Time: {d.get('Best Time to visit')}."
             )
+            context_data.append(place_info)
         
         return "\n".join(context_data) if context_data else None
     except Exception as e:
-        st.error(f"Database Fetch Error: {e}")
+        st.sidebar.error(f"DB Error: {e}")
         return None
 
 # --- 3. API WRAPPERS ---
 def get_flight_data(flight_input):
-    """Fetches flight details and cleans carrier codes"""
     clean_iata = flight_input.replace(" ", "").upper()
     url = f"https://airlabs.co/api/v9/schedules?flight_iata={clean_iata}&api_key={st.secrets['AIRLABS_KEY']}"
     try:
@@ -58,7 +59,6 @@ def get_flight_data(flight_input):
     except: return None
 
 def get_travel_metrics(origin, airport_code):
-    """Fetches driving metrics from Google Maps Distance Matrix"""
     url = "https://maps.googleapis.com/maps/api/distancematrix/json"
     params = {
         "origins": origin, 
@@ -73,15 +73,15 @@ def get_travel_metrics(origin, airport_code):
         return {"seconds": element['duration_in_traffic']['value'], "text": element['duration_in_traffic']['text']}
     except: return None
 
-# --- 4. UI SETUP ---
+# --- 4. STREAMLIT UI ---
 st.set_page_config(page_title="Departly.ai", page_icon="✈️", layout="centered")
 
-# Initialize Session State to persist the destination after the first button click
+# Use Session State to keep the destination city persistent
 if 'dest_city' not in st.session_state:
     st.session_state.dest_city = None
 
 st.title("✈️ Departly.ai")
-st.write("Precision Departure Planning with RAG-Powered Itineraries.")
+st.write("Precision Departure Planning + RAG Itineraries.")
 
 col1, col2 = st.columns(2)
 with col1:
@@ -91,9 +91,9 @@ with col2:
 
 if st.button("Calculate My Safe Departure", use_container_width=True):
     if not home_input or not flight_input:
-        st.warning("Please enter both flight and pickup location.")
+        st.warning("Please enter all fields.")
     else:
-        with st.spinner("Analyzing schedule and traffic..."):
+        with st.spinner("Analyzing schedule and live traffic..."):
             flight = get_flight_data(flight_input)
             if flight:
                 takeoff_dt = parser.parse(flight['dep_time'])
@@ -101,10 +101,10 @@ if st.button("Calculate My Safe Departure", use_container_width=True):
                 traffic = get_travel_metrics(home_input, flight['dep_iata'])
                 
                 if traffic:
-                    # Save destination to session state so 'Generate Itinerary' button can access it
-                    st.session_state.dest_city = flight.get('arr_city', 'Destination')
+                    st.session_state.dest_city = flight.get('arr_city', 'your destination')
                     leave_dt = boarding_dt - timedelta(seconds=traffic['seconds'] + (105 * 60))
                     
+                    st.balloons()
                     st.success(f"### 🚪 Leave Home by: **{leave_dt.strftime('%I:%M %p')}**")
                     
                     m1, m2, m3 = st.columns(3)
@@ -112,50 +112,48 @@ if st.button("Calculate My Safe Departure", use_container_width=True):
                     m2.metric("Boarding", boarding_dt.strftime("%I:%M %p"))
                     m3.metric("Traffic", traffic['text'])
                 else:
-                    st.error("Google Maps could not find your location.")
+                    st.error("Could not calculate traffic route.")
             else:
                 st.error("Flight not found.")
 
-# --- 5. RAG ITINERARY GENERATOR ---
+# --- 5. THE RAG ITINERARY GENERATOR ---
 if st.session_state.dest_city:
     st.divider()
-    st.subheader(f"🗺️ Plan Your {st.session_state.dest_city} Visit")
+    st.subheader(f"🗺️ Explore {st.session_state.dest_city}")
     
-    # Input for number of days
-    num_days = st.slider("Number of days staying?", 1, 7, 3)
+    num_days = st.slider("Select your trip duration (days):", 1, 7, 3)
     
     if st.button(f"Generate {num_days}-Day Itinerary", use_container_width=True):
-        with st.spinner(f"Retrieving RAG context from Firestore..."):
+        with st.spinner(f"Pulling verified data for {st.session_state.dest_city}..."):
             
-            # Step 1: Retrieval (Fetch from Firestore)
+            # Step 1: RETRIEVAL (The RAG Part)
             rag_context = get_itinerary_context(st.session_state.dest_city)
             
-            # Step 2: Augmentation and Generation
-            prompt = f"""
-            You are a luxury travel concierge for Departly.ai.
-            Target City: {st.session_state.dest_city}
+            # Step 2: GENERATION (The AI Part)
+            itinerary_prompt = f"""
+            You are an elite travel concierge for Departly.ai. 
+            City: {st.session_state.dest_city}
             Duration: {num_days} days
             
-            DATABASE RECORDS (Use this for planning):
-            {rag_context if rag_context else "No specific database records found. Use general knowledge."}
+            USE THIS DATA FROM OUR FIRESTORE DATABASE TO GROUND YOUR RESPONSE:
+            {rag_context if rag_context else "No specific database records found. Use general premium knowledge."}
             
-            TASK:
-            1. Create a logical day-by-day itinerary.
-            2. Incorporate 'Significance' and 'Entrance Fees' from the database records.
-            3. Optimize timings based on 'time needed to visit' for each attraction.
-            4. If no database records exist, provide a premium itinerary based on general facts.
-            Format with bold headers and professional bullet points.
+            STRICT INSTRUCTIONS:
+            - Build a logical daily schedule.
+            - Include 'Entrance Fees' and 'Significance' as per the provided database data.
+            - Organize the flow using 'Visit Duration' and 'Best Time' fields from the data.
+            - Format with bold day headers and professional bullet points.
             """
             
             try:
                 response = client.models.generate_content(
                     model='gemini-3-flash-preview',
-                    contents=prompt
+                    contents=itinerary_prompt
                 )
-                st.markdown(f"### ✨ Your {num_days}-Day Itinerary")
+                st.markdown(f"### ✨ Your Custom Itinerary for {st.session_state.dest_city}")
                 st.info(response.text)
             except Exception as e:
-                st.error(f"AI Generation Error: {e}")
+                st.error("AI failed to generate itinerary. Please try again.")
 
 st.markdown("---")
-st.caption("Powered by Firebase Firestore RAG & Gemini 3")
+st.caption("Powered by Firebase Cloud RAG & Gemini 3 Intelligence.")
