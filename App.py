@@ -1,6 +1,7 @@
 import streamlit as st
 import requests
 import json
+import re
 import google.auth.transport.requests
 from google.oauth2 import service_account
 from google import genai
@@ -10,41 +11,75 @@ from dateutil import parser
 # --- 1. CONFIGURATION ---
 st.set_page_config(page_title="Departly.ai", page_icon="✈️", layout="centered")
 
-# --- 2. HTTP FIRESTORE CLIENT (With JSON Fix) ---
+# --- 2. SURGICAL KEY REPAIR (The "Magic" Fix) ---
+def fix_malformed_key(json_str):
+    """
+    Uses Regex to find the 'private_key' block and force-escape 
+    any invisible newlines that cause the 'Invalid control character' error.
+    """
+    try:
+        # Pattern to find: "private_key": " ... "
+        # We capture everything inside the quotes
+        pattern = r'("private_key"\s*:\s*")([\s\S]*?)("\s*[,}])'
+        
+        match = re.search(pattern, json_str)
+        if match:
+            prefix = match.group(1)   # "private_key": "
+            content = match.group(2)  # The messy key content
+            suffix = match.group(3)   # ", or "}
+            
+            # The Fix: Turn real newlines into literal \n characters
+            clean_content = content.replace('\n', '\\n')
+            
+            # Rebuild the JSON string
+            start, end = match.span()
+            return json_str[:start] + prefix + clean_content + suffix + json_str[end:]
+            
+        return json_str
+    except:
+        return json_str
+
+# --- 3. ROBUST FIRESTORE CLIENT ---
 class FirestoreREST:
     def __init__(self, secrets):
         try:
-            # Load Key
+            # 1. Get Raw String
             raw_key = secrets["FIREBASE_KEY"]
             
-            # THE FIX: strict=False allows "Invalid Control Characters" (real newlines)
+            # 2. Apply Surgical Fix
             if isinstance(raw_key, str):
-                key_dict = json.loads(raw_key, strict=False)
+                repaired_json = fix_malformed_key(raw_key)
+                try:
+                    # Try parsing the repaired string
+                    key_dict = json.loads(repaired_json, strict=False)
+                except json.JSONDecodeError:
+                    # Fallback: Try parsing the original (just in case)
+                    key_dict = json.loads(raw_key, strict=False)
             else:
                 key_dict = dict(raw_key)
 
-            # Ensure Private Key has correct newlines for Google Auth
+            # 3. Double Check Escaping (Redundancy is good here)
             if "private_key" in key_dict:
                 key_dict["private_key"] = key_dict["private_key"].replace("\\n", "\n")
             
-            # Create Credentials
+            # 4. Authenticate
             self.creds = service_account.Credentials.from_service_account_info(
                 key_dict, scopes=["https://www.googleapis.com/auth/cloud-platform"]
             )
             self.project_id = key_dict.get("project_id")
             self.base_url = f"https://firestore.googleapis.com/v1/projects/{self.project_id}/databases/(default)/documents"
+            
         except Exception as e:
-            st.error(f"🔥 Authentication Error: {e}")
+            st.error(f"🔥 Critical Auth Failure: {e}")
+            st.warning("Double check that your `FIREBASE_KEY` in secrets is wrapped in triple quotes (`'''` or `\"\"\"`).")
             st.stop()
 
     def query_city(self, city_name):
-        """Fetches docs via HTTP to bypass firewall hanging."""
-        # Refresh Token
+        """Fetches docs via HTTP (Firewall Bypass)."""
         auth_req = google.auth.transport.requests.Request()
         self.creds.refresh(auth_req)
         token = self.creds.token
         
-        # Firestore Structured Query
         url = f"{self.base_url}:runQuery"
         headers = {"Authorization": f"Bearer {token}"}
         
@@ -71,23 +106,21 @@ class FirestoreREST:
             return []
 
     def _parse_response(self, json_data):
-        """Clean Firestore JSON response."""
         results = []
         for item in json_data:
             if "document" in item:
                 raw_fields = item["document"]["fields"]
                 clean_doc = {}
                 for key, val in raw_fields.items():
-                    # Extract the first value (stringValue, integerValue, etc.)
                     clean_doc[key] = list(val.values())[0]
                 results.append(clean_doc)
         return results
 
-# Initialize
+# Initialize Database
 db_http = FirestoreREST(st.secrets)
 client = genai.Client(api_key=st.secrets["GEMINI_KEY"])
 
-# --- 3. DATA & API ---
+# --- 4. DATA LOGIC ---
 CITY_VARIANTS = {
     "DEL": ["Delhi", "New Delhi"],
     "BLR": ["Bengaluru", "Bangalore"],
@@ -140,7 +173,7 @@ def get_traffic(origin, dest_code):
         return {"sec": elem['duration_in_traffic']['value'], "txt": elem['duration_in_traffic']['text']}
     except: return None
 
-# --- 4. UI ---
+# --- 5. UI ---
 if 'flight_info' not in st.session_state:
     st.session_state.flight_info = None
 
