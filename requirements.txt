@@ -1,4 +1,5 @@
-google-genai>=1.0.0
 streamlit
+google-genai>=1.0.0
 requests
 python-dateutil
+firebase-admin
