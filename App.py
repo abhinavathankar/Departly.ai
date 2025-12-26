@@ -77,7 +77,7 @@ db_http = FirestoreREST(st.secrets)
 client = genai.Client(api_key=st.secrets["GEMINI_KEY"])
 AVAILABLE_MODELS = ['gemini-2.0-flash-exp', 'gemini-1.5-flash', 'gemini-1.5-pro']
 
-# --- 3. FLIGHT & TRAFFIC LOGIC ---
+# --- 3. LOGIC ---
 CITY_VARIANTS = {
     "DEL": ["Delhi", "New Delhi"],
     "BLR": ["Bengaluru", "Bangalore"],
@@ -111,12 +111,19 @@ def get_flight_data(flight_input):
             f_data = res["response"][0]
             code = f_data.get('arr_iata') or f_data.get('arr_icao')
             f_data['dest_code'] = code
+            
+            # --- FIX: Dynamic Fallback ---
+            # Instead of hardcoding "Delhi", we try to use the actual city name from API
+            # If API doesn't have city name, ONLY THEN we fallback to a default.
             if code in CITY_VARIANTS:
                 f_data['targets'] = CITY_VARIANTS[code]
                 f_data['display'] = CITY_VARIANTS[code][0]
             else:
-                f_data['targets'] = ["Delhi"]
-                f_data['display'] = "Unknown"
+                # Use the API's reported city name if available
+                city_from_api = f_data.get('arr_city', 'Unknown City')
+                f_data['targets'] = [city_from_api]
+                f_data['display'] = city_from_api
+            
             return f_data
     except: pass
     return None
@@ -149,14 +156,26 @@ if st.button("Calculate Departure", type="primary", use_container_width=True):
         if flight:
             st.session_state.flight_info = flight
             
-            # --- NEW: RAW DATA VISUALIZER ---
-            with st.expander("🔍 Raw API Data (Check Time Here)", expanded=True):
-                st.write(f"**Flight No:** {flight.get('flight_iata')}")
-                st.write(f"**From:** {flight.get('dep_iata')} ➝ **To:** {flight.get('arr_iata')}")
-                st.write(f"**Dep Time (API):** `{flight.get('dep_time')}`")
-                st.write(f"**Arr Time (API):** `{flight.get('arr_time')}`")
-                st.json(flight) # Full JSON dump
+            # --- 🛑 FORCE DISPLAY: API DATA DASHBOARD ---
+            st.markdown("### 🎫 Flight Ticket Details")
             
+            # Create a visual ticket layout
+            t1, t2, t3, t4 = st.columns(4)
+            t1.metric("Flight", flight.get('flight_iata'))
+            t2.metric("Date", flight.get('dep_time').split()[0] if 'dep_time' in flight else "N/A")
+            t3.metric("Origin", f"{flight.get('dep_city')} ({flight.get('dep_iata')})")
+            t4.metric("Dest", f"{flight.get('arr_city')} ({flight.get('arr_iata')})")
+            
+            # Time Row
+            d1, d2 = st.columns(2)
+            d1.info(f"🛫 **Departure:** {flight.get('dep_time')}")
+            d2.info(f"🛬 **Arrival:** {flight.get('arr_time')}")
+            
+            # JSON Dump (No Expander - Always Visible)
+            st.text("⬇️ RAW API RESPONSE (For Debugging) ⬇️")
+            st.json(flight)
+            # --------------------------------------------
+
             traffic = get_traffic(p_in, flight['dest_code'])
             
             # Logic
@@ -166,15 +185,10 @@ if st.button("Calculate Departure", type="primary", use_container_width=True):
             
             st.success(f"### 🚪 Leave Home by: **{leave_dt.strftime('%I:%M %p')}**")
 
-            # Calculation breakdown
-            c1, c2, c3 = st.columns(3)
-            c1.metric("Takeoff", takeoff_dt.strftime('%I:%M %p'))
-            c2.metric("Traffic", traffic['txt'])
-            c3.metric("Buffer", "1h 45m")
-
         else:
             st.error("Flight not found.")
 
+# --- 5. ITINERARY SECTION ---
 if st.session_state.flight_info:
     st.divider()
     targets = st.session_state.flight_info['targets']
