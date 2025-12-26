@@ -8,10 +8,7 @@ from datetime import datetime, timedelta
 from dateutil import parser
 
 # --- 1. CONFIGURATION ---
-st.set_page_config(page_title="Departly Debugger", page_icon="🐞", layout="centered")
-
-st.title("🐞 Departly Debug Mode")
-st.write("This mode prints every step to find the hidden error.")
+st.set_page_config(page_title="Departly.ai", page_icon="✈️", layout="centered")
 
 # --- 2. HTTP CLIENT ---
 class FirestoreREST:
@@ -76,110 +73,201 @@ class FirestoreREST:
                 results.append(clean_doc)
         return results
 
-# Initialize
+# Initialize Services
 try:
     db_http = FirestoreREST(st.secrets)
     client = genai.Client(api_key=st.secrets["GEMINI_KEY"])
 except Exception as e:
-    st.error(f"Startup Error: {e}")
+    st.error(f"Service Init Error: {e}")
 
-AVAILABLE_MODELS = ['gemini-2.0-flash-exp', 'gemini-1.5-flash', 'gemini-1.5-pro']
-CITY_VARIANTS = {"DEL": ["Delhi"], "BLR": ["Bangalore"], "BOM": ["Mumbai"]}
+# --- 3. DATA & LOGIC ---
+AVAILABLE_MODELS = ['gemini-1.5-flash', 'gemini-1.5-pro', 'gemini-2.0-flash-exp']
 
-# --- 3. DEBUGGED FLIGHT FUNCTION ---
-def get_flight_data_debug(flight_input):
-    clean_iata = flight_input.replace(" ", "").upper()
-    api_key = st.secrets.get('AIRLABS_KEY', '')
+# NEW: INDIAN AIRLINES MAPPING
+INDIAN_AIRLINES = {
+    "IndiGo": "6E",
+    "Air India": "AI",
+    "Vistara": "UK",
+    "SpiceJet": "SG",
+    "Air India Express": "IX",
+    "Akasa Air": "QP",
+    "Alliance Air": "9I",
+    "Star Air": "S5",
+    "Fly91": "IC"
+}
+
+CITY_VARIANTS = {
+    "DEL": ["Delhi", "New Delhi"],
+    "BLR": ["Bengaluru", "Bangalore"],
+    "BOM": ["Mumbai"],
+    "MAA": ["Chennai"],
+    "HYD": ["Hyderabad"],
+    "GOI": ["Goa"],
+    "JAI": ["Jaipur"],
+    "CCU": ["Kolkata"]
+}
+
+def get_rag_data_http(target_cities):
+    all_docs = []
+    for city in target_cities:
+        clean_city = city.strip()
+        docs = db_http.query_city(clean_city)
+        for d in docs:
+            if d.get('Name'):
+                entry = (f"• {d.get('Name')} | Type: {d.get('Type')} | "
+                         f"Fee: {d.get('Entrance Fee in INR')} | "
+                         f"Time: {d.get('time needed to visit in hrs')}h")
+                all_docs.append(entry)
+    return all_docs
+
+def get_flight_data(iata_code):
+    """
+    Query AirLabs using the constructed IATA code (e.g. '6E6433')
+    """
+    clean_iata = iata_code.replace(" ", "").upper()
     
-    st.write(f"🔹 **Step 1:** Searching API for `{clean_iata}`...")
-    
-    if not api_key:
-        st.error("❌ CRITICAL: 'AIRLABS_KEY' is missing from secrets.toml")
-        return None
-
-    url = f"https://airlabs.co/api/v9/schedules?flight_iata={clean_iata}&api_key={api_key}"
+    # We pass 'flight_iata' which combines Airline+Number. 
+    # This works best for AirLabs schedules.
+    url = f"https://airlabs.co/api/v9/schedules?flight_iata={clean_iata}&api_key={st.secrets['AIRLABS_KEY']}"
     
     try:
-        res = requests.get(url, timeout=10)
-        st.write(f"🔹 **Step 2:** API Status Code: `{res.status_code}`")
+        res = requests.get(url, timeout=8)
+        res_json = res.json()
         
-        try:
-            res_json = res.json()
-        except:
-            st.error("❌ API returned non-JSON response.")
-            st.text(res.text)
-            return None
-
-        # SHOW RAW RESPONSE IMMEDIATELY
-        with st.expander("🔍 Click to see RAW API Response", expanded=True):
-            st.json(res_json)
-
-        if "error" in res_json:
-            st.error(f"❌ API Error Message: {res_json['error'].get('message')}")
-            return None
-
         if "response" in res_json and res_json["response"]:
             f_data = res_json["response"][0]
-            st.success("✅ **Step 3:** Flight Data Found!")
-            
-            # Map Data
             code = f_data.get('arr_iata') or f_data.get('arr_icao')
             f_data['dest_code'] = code
             
+            # Smart Fallback Logic
             if code in CITY_VARIANTS:
                 f_data['targets'] = CITY_VARIANTS[code]
                 f_data['display'] = CITY_VARIANTS[code][0]
             else:
-                city_api = f_data.get('arr_city', 'Unknown')
-                f_data['targets'] = [city_api]
-                f_data['display'] = city_api
+                city_from_api = f_data.get('arr_city', 'Unknown City')
+                f_data['targets'] = [city_from_api]
+                f_data['display'] = city_from_api
             
             return f_data
-        else:
-            st.warning("⚠️ **Step 3 Failed:** API returned success (200) but the 'response' list is empty. This means AirLabs has no data for this flight number today.")
-            return None
-
+        elif "error" in res_json:
+            st.error(f"Flight API Error: {res_json['error'].get('message')}")
     except Exception as e:
-        st.error(f"❌ Connection Exception: {e}")
-        return None
+        st.error(f"Connection Error: {e}")
+    return None
 
 def get_traffic(origin, dest_code):
-    # Simplified for debug
-    return {"sec": 5400, "txt": "1h 30m (Debug Default)"}
+    url = "https://maps.googleapis.com/maps/api/distancematrix/json"
+    params = {"origins": origin, "destinations": f"{dest_code} Airport", "mode": "driving", "departure_time": "now", "key": st.secrets["GOOGLE_MAPS_KEY"]}
+    try:
+        data = requests.get(url, params=params, timeout=5).json()
+        if "rows" in data and data["rows"]:
+            elem = data['rows'][0]['elements'][0]
+            if elem['status'] == "OK":
+                return {"sec": elem['duration_in_traffic']['value'], "txt": elem['duration_in_traffic']['text']}
+    except: pass
+    return {"sec": 5400, "txt": "1h 30m (Est)"}
 
 # --- 4. UI ---
-col1, col2 = st.columns(2)
-with col1: f_in = st.text_input("Flight Number", value="6E 6433")
-with col2: p_in = st.text_input("Pickup Point", value="Hoodi, Bangalore")
+st.title("✈️ Departly.ai")
+st.write("Indian Airlines Departure Planner")
 
-if st.button("Run Debug Trace", type="primary"):
-    st.divider()
+# --- UPDATED INPUT SECTION ---
+c_airline, c_number = st.columns([1, 1])
+with c_airline:
+    # Dropdown for Airline
+    airline_name = st.selectbox("Select Airline", list(INDIAN_AIRLINES.keys()))
+    airline_code = INDIAN_AIRLINES[airline_name] # Gets '6E', 'AI', etc.
     
-    # 1. GET FLIGHT
-    flight = get_flight_data_debug(f_in)
-    
-    # 2. CHECK RESULT
-    if flight:
-        st.divider()
-        st.header("🎫 FLIGHT DASHBOARD")
-        
-        # BLUE BOXES
-        c1, c2, c3, c4 = st.columns(4)
-        c1.info(f"**Flight:** {flight.get('flight_iata')}")
-        c2.info(f"**Departs:** {flight.get('dep_time')}")
-        c3.info(f"**Arrives:** {flight.get('arr_time')}")
-        c4.info(f"**Dest:** {flight.get('dest_code')}")
-        
-        # 3. GET ITINERARY DATA
-        st.divider()
-        st.write(f"🔹 **Step 4:** Querying Database for {flight['targets']}...")
-        docs = get_rag_data_http(flight['targets'])
-        
-        if docs:
-            st.success(f"✅ **Step 5:** Found {len(docs)} documents.")
-            st.write(docs)
-        else:
-            st.warning("⚠️ **Step 5:** Database returned 0 documents.")
-            
+with c_number:
+    # Simple number input
+    flight_num = st.text_input("Flight Number", placeholder="e.g. 6433")
+
+p_in = st.text_input("Pickup Point", placeholder="e.g. Hoodi, Bangalore")
+
+if 'flight_info' not in st.session_state:
+    st.session_state.flight_info = None
+
+if st.button("Calculate Journey", type="primary", use_container_width=True):
+    if not flight_num:
+        st.warning("Please enter a flight number.")
     else:
-        st.error("🛑 STOP: Could not proceed because Flight Data was None.")
+        # CONSTRUCT THE IATA CODE
+        full_flight_code = f"{airline_code}{flight_num}"
+        
+        with st.spinner(f"Searching for {full_flight_code}..."):
+            flight = get_flight_data(full_flight_code)
+            
+            if flight:
+                st.session_state.flight_info = flight
+                
+                # --- DASHBOARD ---
+                st.divider()
+                st.subheader(f"🎫 Ticket: {flight.get('flight_iata')}")
+                
+                # Visual Ticket Row
+                t1, t2, t3, t4 = st.columns(4)
+                t1.metric("Airline", airline_name)
+                t2.metric("Date", flight.get('dep_time').split()[0])
+                t3.metric("Origin", flight.get('dep_iata'))
+                t4.metric("Dest", flight.get('arr_iata'))
+                
+                # Detailed Times
+                st.info(f"🛫 **Departs:** {flight.get('dep_time')}  |  🛬 **Arrives:** {flight.get('arr_time')}")
+                
+                # Raw Data Inspector
+                with st.expander("🔍 See Raw API Data"):
+                    st.json(flight)
+
+                # --- TRAFFIC & LEAVE TIME ---
+                traffic = get_traffic(p_in, flight['dest_code'])
+                
+                takeoff_dt = parser.parse(flight['dep_time'])
+                total_buffer_sec = traffic['sec'] + (45 * 60) + (60 * 60)
+                leave_dt = takeoff_dt - timedelta(seconds=total_buffer_sec)
+                
+                st.success(f"### 🚪 Leave Home by: **{leave_dt.strftime('%I:%M %p')}**")
+                
+                c1, c2, c3 = st.columns(3)
+                c1.metric("Traffic Time", traffic['txt'])
+                c2.metric("Safety Buffer", "1h 45m")
+                c3.metric("Status", "On Time")
+
+            else:
+                st.error(f"Flight {full_flight_code} not found. Check the number or try again later.")
+
+# --- 5. ITINERARY GENERATOR ---
+if st.session_state.flight_info:
+    st.divider()
+    targets = st.session_state.flight_info['targets']
+    display = st.session_state.flight_info['display']
+    
+    st.subheader(f"🗺️ Plan Your Trip to {display}")
+    
+    c1, c2 = st.columns([1, 2])
+    with c1: days = st.slider("Duration (Days)", 1, 7, 3)
+    with c2: selected_model = st.selectbox("AI Model", AVAILABLE_MODELS, index=0)
+    
+    if st.button("Generate Verified Itinerary", use_container_width=True):
+        with st.spinner(f"Querying Knowledge Base for {display}..."):
+            rag_docs = get_rag_data_http(targets)
+            
+            with st.expander(f"📚 Found {len(rag_docs)} Verified Places"):
+                st.write(rag_docs)
+
+            if rag_docs:
+                context = "\n".join(rag_docs)
+                prompt = f"""
+                You are an expert travel agent for {display}.
+                Create a {days}-day itinerary using ONLY the following verified data.
+                
+                VERIFIED DATA:
+                {context}
+                """
+                try:
+                    res = client.models.generate_content(model=selected_model, contents=prompt)
+                    st.markdown("### ✨ Your Verified Itinerary")
+                    st.markdown(res.text)
+                except Exception as e:
+                    st.error(f"AI Error: {e}")
+            else:
+                st.warning(f"No database records found for {display}. Try a different city.")
