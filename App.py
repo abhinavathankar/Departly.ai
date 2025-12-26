@@ -124,16 +124,18 @@ def get_flight_data(iata_code):
         if "response" in res_json and res_json["response"]:
             f_data = res_json["response"][0]
             
-            # ORIGIN CODE (For Traffic)
+            # --- CRITICAL: CAPTURE ORIGIN CODE ---
+            # This is what we need for Google Maps (e.g. 'BLR')
             f_data['origin_code'] = f_data.get('dep_iata') or f_data.get('dep_icao')
             
-            # DESTINATION CODE (For Itinerary)
-            code = f_data.get('arr_iata') or f_data.get('arr_icao')
-            f_data['dest_code'] = code
+            # This is for the Itinerary (e.g. 'DEL')
+            dest_code = f_data.get('arr_iata') or f_data.get('arr_icao')
+            f_data['dest_code'] = dest_code
             
-            if code in CITY_VARIANTS:
-                f_data['targets'] = CITY_VARIANTS[code]
-                f_data['display'] = CITY_VARIANTS[code][0]
+            # Targets for RAG (Based on Destination)
+            if dest_code in CITY_VARIANTS:
+                f_data['targets'] = CITY_VARIANTS[dest_code]
+                f_data['display'] = CITY_VARIANTS[dest_code][0]
             else:
                 city_from_api = f_data.get('arr_city', 'Unknown City')
                 f_data['targets'] = [city_from_api]
@@ -145,18 +147,23 @@ def get_flight_data(iata_code):
         st.error(f"Connection Error: {e}")
     return None
 
-def get_traffic(origin_address, airport_code):
+def get_traffic(pickup_address, target_airport_code):
     """
-    Calculates traffic from User Location -> Origin Airport
+    Calculates traffic from Pickup Address -> Target Airport
     """
+    # Explicitly append "Airport" to the code (e.g., "BLR Airport")
+    # This ensures Google Maps finds the airport, not the city center.
+    destination_query = f"{target_airport_code} Airport"
+    
     url = "https://maps.googleapis.com/maps/api/distancematrix/json"
     params = {
-        "origins": origin_address,
-        "destinations": f"{airport_code} Airport", # e.g. "BLR Airport"
+        "origins": pickup_address,
+        "destinations": destination_query, 
         "mode": "driving", 
         "departure_time": "now", 
         "key": st.secrets["GOOGLE_MAPS_KEY"]
     }
+    
     try:
         data = requests.get(url, params=params, timeout=5).json()
         if "rows" in data and data["rows"]:
@@ -207,8 +214,8 @@ if st.button("Calculate Journey", type="primary", use_container_width=True):
                 with st.expander("🔍 See Raw API Data"):
                     st.json(flight)
 
-                # --- CORRECTED CALCULATION LOGIC ---
-                # 1. Use ORIGIN Airport for Traffic (flight['origin_code'])
+                # --- TRAFFIC LOGIC (FIXED) ---
+                # We pass flight['origin_code'] (e.g., BLR) as the drive destination
                 traffic = get_traffic(p_in, flight['origin_code'])
                 
                 takeoff_dt = parser.parse(flight['dep_time'])
@@ -224,7 +231,8 @@ if st.button("Calculate Journey", type="primary", use_container_width=True):
                 
                 # Breakdown Panel
                 c1, c2, c3, c4 = st.columns(4)
-                c1.metric("Route", f"To {flight['origin_code']}")
+                # Show the user WHERE they are driving to
+                c1.metric("Drive To", f"{flight['origin_code']} Airport")
                 c2.metric("Traffic", traffic['txt'])
                 c3.metric("Boarding", "45 mins")
                 c4.metric("Security", "30 mins")
