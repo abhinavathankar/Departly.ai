@@ -6,6 +6,7 @@ from google.oauth2 import service_account
 from google import genai
 from datetime import datetime, timedelta
 from dateutil import parser
+from streamlit_js_eval import get_geolocation
 
 # --- 1. CONFIGURATION ---
 st.set_page_config(page_title="Departly.ai", page_icon="✈️", layout="centered")
@@ -89,7 +90,7 @@ CITY_VARIANTS = {
     "GOI": ["Goa"], "JAI": ["Jaipur"], "CCU": ["Kolkata"]
 }
 
-# --- 3. HELPERS ---
+# --- 3. HELPER FUNCTIONS ---
 def get_flight_data(iata_code):
     clean_iata = iata_code.replace(" ", "").upper()
     url = f"https://airlabs.co/api/v9/schedules?flight_iata={clean_iata}&api_key={st.secrets['AIRLABS_KEY']}"
@@ -112,12 +113,31 @@ def get_flight_data(iata_code):
     except: pass
     return None
 
+def reverse_geocode(lat, lng):
+    """Converts GPS Lat/Lng -> Address using Google Maps API"""
+    url = "https://maps.googleapis.com/maps/api/geocode/json"
+    params = {
+        "latlng": f"{lat},{lng}",
+        "key": st.secrets["GOOGLE_MAPS_KEY"]
+    }
+    try:
+        res = requests.get(url, params=params).json()
+        if res.get('status') == 'OK':
+            # Returns the most specific address found
+            return res['results'][0]['formatted_address']
+    except:
+        pass
+    return None
+
 def get_traffic(pickup_address, target_airport_code):
     destination_query = f"{target_airport_code} Airport"
     url = "https://maps.googleapis.com/maps/api/distancematrix/json"
     params = {
-        "origins": pickup_address, "destinations": destination_query, 
-        "mode": "driving", "departure_time": "now", "key": st.secrets["GOOGLE_MAPS_KEY"]
+        "origins": pickup_address, 
+        "destinations": destination_query, 
+        "mode": "driving", 
+        "departure_time": "now", 
+        "key": st.secrets["GOOGLE_MAPS_KEY"]
     }
     try:
         data = requests.get(url, params=params, timeout=5).json()
@@ -134,11 +154,30 @@ st.title("✈️ Departly.ai")
 # PERSISTENT DATA
 if 'flight_info' not in st.session_state: st.session_state.flight_info = None
 if 'journey_meta' not in st.session_state: st.session_state.journey_meta = None
+if 'pickup_loc' not in st.session_state: st.session_state.pickup_loc = ""
 
 airline_name = st.selectbox("Select Airline", list(INDIAN_AIRLINES.keys()))
 airline_code = INDIAN_AIRLINES[airline_name]
 flight_num = st.text_input("Flight Number", placeholder="e.g. 6433")
-p_in = st.text_input("Pickup Point", placeholder="e.g. Hoodi, Bangalore")
+
+# --- 📍 GPS LOGIC ---
+# This button triggers the browser's location prompt
+loc_data = get_geolocation(component_key='get_loc')
+
+if loc_data:
+    lat = loc_data.get('coords', {}).get('latitude')
+    lng = loc_data.get('coords', {}).get('longitude')
+    
+    # If we got coordinates and the box is empty, fill it automatically
+    if lat and lng and not st.session_state.pickup_loc:
+        with st.spinner("📍 Detecting your address..."):
+            address = reverse_geocode(lat, lng)
+            if address:
+                st.session_state.pickup_loc = address
+                st.rerun() # Refresh to show the address in the box
+
+# INPUT BAR (Linked to Session State)
+p_in = st.text_input("Pickup Point", value=st.session_state.pickup_loc, placeholder="e.g. Hoodi, Bangalore")
 
 if st.button("Calculate Journey", type="primary", use_container_width=True):
     if not (flight_num and p_in):
@@ -148,12 +187,13 @@ if st.button("Calculate Journey", type="primary", use_container_width=True):
         with st.spinner(f"Analyzing {full_flight_code}..."):
             flight = get_flight_data(full_flight_code)
             if flight:
+                # TRAFFIC: Uses the 'p_in' which might be the Autofilled GPS address
                 traffic = get_traffic(p_in, flight['origin_code'])
                 takeoff_dt = parser.parse(flight['dep_time'])
                 total_buffer_sec = traffic['sec'] + (45 * 60) + (30 * 60)
                 leave_dt = takeoff_dt - timedelta(seconds=total_buffer_sec)
                 
-                # Store everything in session state so it survives the next button click
+                # Update Session State
                 st.session_state.flight_info = flight
                 st.session_state.journey_meta = {
                     "leave_time": leave_dt.strftime('%I:%M %p'),
@@ -166,7 +206,7 @@ if st.button("Calculate Journey", type="primary", use_container_width=True):
             else:
                 st.error("Flight not found.")
 
-# --- DISPLAY JOURNEY (This now stays visible) ---
+# --- DISPLAY JOURNEY ---
 if st.session_state.journey_meta:
     j = st.session_state.journey_meta
     st.markdown("---")
@@ -196,7 +236,6 @@ if st.session_state.flight_info:
     days = st.slider("Trip Duration (Days)", 1, 7, 3)
     
     if st.button(f"Generate Itinerary (Gemini 3 Flash)", use_container_width=True):
-        # We NO LONGER clear the placeholder, so the breakdown stays visible.
         with st.spinner("Creating your custom itinerary..."):
             rag_docs = []
             for city in targets:
