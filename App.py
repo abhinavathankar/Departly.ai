@@ -10,38 +10,29 @@ from dateutil import parser
 # --- 1. CONFIGURATION ---
 st.set_page_config(page_title="Departly.ai", page_icon="✈️", layout="centered")
 
-# Define your model hierarchy here
-AVAILABLE_MODELS = ['gemini-2.0-flash-exp', 'gemini-1.5-flash', 'gemini-1.5-pro']
-
-# --- 2. HTTP FIRESTORE CLIENT (Firewall Bypass) ---
+# --- 2. HTTP CLIENT ---
 class FirestoreREST:
     def __init__(self, secrets):
         try:
-            # 1. Load Key
             raw_key = secrets["FIREBASE_KEY"]
-            
-            # Use standard JSON loading with strict=False
             if isinstance(raw_key, str):
                 key_dict = json.loads(raw_key, strict=False)
             else:
                 key_dict = dict(raw_key)
 
-            # 2. Fix Newlines
             if "private_key" in key_dict:
                 key_dict["private_key"] = key_dict["private_key"].replace("\\n", "\n")
             
-            # 3. Create Credentials
             self.creds = service_account.Credentials.from_service_account_info(
                 key_dict, scopes=["https://www.googleapis.com/auth/cloud-platform"]
             )
             self.project_id = key_dict.get("project_id")
             self.base_url = f"https://firestore.googleapis.com/v1/projects/{self.project_id}/databases/(default)/documents"
         except Exception as e:
-            st.error(f"🔥 Authentication Error: {e}")
+            st.error(f"🔥 Auth Error: {e}")
             st.stop()
 
     def query_city(self, city_name):
-        """Fetches docs via HTTP to bypass firewall hanging."""
         auth_req = google.auth.transport.requests.Request()
         self.creds.refresh(auth_req)
         token = self.creds.token
@@ -72,7 +63,6 @@ class FirestoreREST:
             return []
 
     def _parse_response(self, json_data):
-        """Clean Firestore JSON response."""
         results = []
         for item in json_data:
             if "document" in item:
@@ -83,11 +73,11 @@ class FirestoreREST:
                 results.append(clean_doc)
         return results
 
-# Initialize
 db_http = FirestoreREST(st.secrets)
 client = genai.Client(api_key=st.secrets["GEMINI_KEY"])
+AVAILABLE_MODELS = ['gemini-2.0-flash-exp', 'gemini-1.5-flash', 'gemini-1.5-pro']
 
-# --- 3. DATA & API ---
+# --- 3. FLIGHT & TRAFFIC LOGIC ---
 CITY_VARIANTS = {
     "DEL": ["Delhi", "New Delhi"],
     "BLR": ["Bengaluru", "Bangalore"],
@@ -136,9 +126,12 @@ def get_traffic(origin, dest_code):
     params = {"origins": origin, "destinations": f"{dest_code} Airport", "mode": "driving", "departure_time": "now", "key": st.secrets["GOOGLE_MAPS_KEY"]}
     try:
         data = requests.get(url, params=params, timeout=5).json()
-        elem = data['rows'][0]['elements'][0]
-        return {"sec": elem['duration_in_traffic']['value'], "txt": elem['duration_in_traffic']['text']}
-    except: return None
+        if "rows" in data and data["rows"]:
+            elem = data['rows'][0]['elements'][0]
+            if elem['status'] == "OK":
+                return {"sec": elem['duration_in_traffic']['value'], "txt": elem['duration_in_traffic']['text']}
+    except: pass
+    return {"sec": 5400, "txt": "1h 30m (Est)"}
 
 # --- 4. UI ---
 if 'flight_info' not in st.session_state:
@@ -150,19 +143,35 @@ with col1: f_in = st.text_input("Flight Number", placeholder="e.g. 6E 6433")
 with col2: p_in = st.text_input("Pickup Point", placeholder="e.g. Hoodi, Bangalore")
 
 if st.button("Calculate Departure", type="primary", use_container_width=True):
-    with st.spinner("Analyzing..."):
+    with st.spinner("Fetching Data..."):
         flight = get_flight_data(f_in)
+        
         if flight:
             st.session_state.flight_info = flight
+            
+            # --- NEW: RAW DATA VISUALIZER ---
+            with st.expander("🔍 Raw API Data (Check Time Here)", expanded=True):
+                st.write(f"**Flight No:** {flight.get('flight_iata')}")
+                st.write(f"**From:** {flight.get('dep_iata')} ➝ **To:** {flight.get('arr_iata')}")
+                st.write(f"**Dep Time (API):** `{flight.get('dep_time')}`")
+                st.write(f"**Arr Time (API):** `{flight.get('arr_time')}`")
+                st.json(flight) # Full JSON dump
+            
             traffic = get_traffic(p_in, flight['dest_code'])
-            if traffic:
-                takeoff = parser.parse(flight['dep_time'])
-                leave = (takeoff - timedelta(minutes=45)) - timedelta(seconds=traffic['sec'] + 3600)
-                st.balloons()
-                st.success(f"### 🚪 Leave Home by: **{leave.strftime('%I:%M %p')}**")
-                st.info(f"Flight to **{flight['display']}** detected.")
-            else:
-                st.error("Traffic Error.")
+            
+            # Logic
+            takeoff_dt = parser.parse(flight['dep_time'])
+            total_buffer_sec = traffic['sec'] + (45 * 60) + (60 * 60)
+            leave_dt = takeoff_dt - timedelta(seconds=total_buffer_sec)
+            
+            st.success(f"### 🚪 Leave Home by: **{leave_dt.strftime('%I:%M %p')}**")
+
+            # Calculation breakdown
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Takeoff", takeoff_dt.strftime('%I:%M %p'))
+            c2.metric("Traffic", traffic['txt'])
+            c3.metric("Buffer", "1h 45m")
+
         else:
             st.error("Flight not found.")
 
@@ -173,17 +182,12 @@ if st.session_state.flight_info:
     
     st.subheader(f"🗺️ Guide for {display}")
     
-    # --- MODEL SELECTOR ---
     c1, c2 = st.columns([1, 2])
-    with c1:
-        days = st.slider("Trip Duration (Days)", 1, 7, 3)
-    with c2:
-        # Selector for the model
-        selected_model = st.selectbox("AI Model", AVAILABLE_MODELS, index=1)
-        # Default index=1 (gemini-1.5-flash) is safer as 2.0 is experimental
+    with c1: days = st.slider("Trip Duration (Days)", 1, 7, 3)
+    with c2: selected_model = st.selectbox("AI Model", AVAILABLE_MODELS, index=1)
     
     if st.button("Generate Verified Itinerary", use_container_width=True):
-        with st.spinner(f"Fetching data via HTTP for {targets}..."):
+        with st.spinner(f"Fetching verified data for {display}..."):
             rag_docs = get_rag_data_http(targets)
             
             with st.expander(f"📚 Data Inspector ({len(rag_docs)} records)"):
@@ -192,18 +196,11 @@ if st.session_state.flight_info:
             if rag_docs:
                 context = "\n".join(rag_docs)
                 prompt = f"Create a {days}-day itinerary for {display} using this data:\n{context}"
-                
                 try:
-                    # Uses the selected model from the dropdown
-                    res = client.models.generate_content(
-                        model=selected_model, 
-                        contents=prompt
-                    )
+                    res = client.models.generate_content(model=selected_model, contents=prompt)
                     st.markdown("### ✨ Your Verified Itinerary")
                     st.markdown(res.text)
-                    
                 except Exception as e:
-                    st.error(f"🤖 AI Error with {selected_model}: {e}")
-                    st.caption("Try selecting a stable model like 'gemini-1.5-flash'")
+                    st.error(f"AI Error: {e}")
             else:
-                st.warning("No records found via HTTP. Check City Name in CSV.")
+                st.warning("No records found via HTTP.")
