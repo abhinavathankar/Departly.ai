@@ -1,6 +1,6 @@
 import streamlit as st
 import requests
-import re
+import json
 import google.auth.transport.requests
 from google.oauth2 import service_account
 from google import genai
@@ -10,67 +10,41 @@ from dateutil import parser
 # --- 1. CONFIGURATION ---
 st.set_page_config(page_title="Departly.ai", page_icon="✈️", layout="centered")
 
-# --- 2. THE REGEX SCRAPER (Bypasses JSON Errors) ---
-def extract_credentials_manually(text_content):
-    """
-    Scrapes the credentials using Regex, ignoring JSON formatting errors.
-    """
-    creds = {}
-    
-    # 1. Extract Project ID
-    # Looks for: "project_id": "something"
-    pid_match = re.search(r'"project_id"\s*:\s*"([^"]+)"', text_content)
-    if pid_match:
-        creds["project_id"] = pid_match.group(1)
-        
-    # 2. Extract Client Email
-    # Looks for: "client_email": "something"
-    email_match = re.search(r'"client_email"\s*:\s*"([^"]+)"', text_content)
-    if email_match:
-        creds["client_email"] = email_match.group(1)
-        
-    # 3. Extract Private Key (The Hard Part)
-    # Looks for: "private_key": "ANYTHING HERE"
-    # [^"]* matches everything including newlines until the next quote
-    key_match = re.search(r'"private_key"\s*:\s*"([^"]*)"', text_content)
-    if key_match:
-        raw_key = key_match.group(1)
-        # Fix the key: Convert literal \n to real newlines
-        creds["private_key"] = raw_key.replace("\\n", "\n")
-        
-    return creds
-
-# --- 3. ROBUST REST CLIENT ---
+# --- 2. HTTP FIRESTORE CLIENT ---
 class FirestoreREST:
     def __init__(self, secrets):
         try:
-            # Get the raw string from secrets
-            raw_key_string = secrets["FIREBASE_KEY"]
+            # 1. Load Key
+            raw_key = secrets["FIREBASE_KEY"]
             
-            # USE THE SCRAPER instead of json.loads
-            key_dict = extract_credentials_manually(raw_key_string)
+            # Use standard JSON loading
+            if isinstance(raw_key, str):
+                key_dict = json.loads(raw_key, strict=False)
+            else:
+                key_dict = dict(raw_key)
+
+            # 2. Fix Newlines (Standard safety check)
+            if "private_key" in key_dict:
+                key_dict["private_key"] = key_dict["private_key"].replace("\\n", "\n")
             
-            # Validate extraction
-            if "project_id" not in key_dict or "private_key" not in key_dict:
-                st.error("❌ Regex Failed: Could not find 'project_id' or 'private_key' in the secrets string.")
-                st.stop()
-            
-            # Authenticate
+            # 3. Create Credentials
             self.creds = service_account.Credentials.from_service_account_info(
                 key_dict, scopes=["https://www.googleapis.com/auth/cloud-platform"]
             )
             self.project_id = key_dict.get("project_id")
             self.base_url = f"https://firestore.googleapis.com/v1/projects/{self.project_id}/databases/(default)/documents"
-            
         except Exception as e:
-            st.error(f"🔥 Auth Setup Error: {e}")
+            st.error(f"🔥 Authentication Error: {e}")
             st.stop()
 
     def query_city(self, city_name):
+        """Fetches docs via HTTP to bypass firewall hanging."""
+        # Refresh Token
         auth_req = google.auth.transport.requests.Request()
         self.creds.refresh(auth_req)
         token = self.creds.token
         
+        # Firestore Structured Query
         url = f"{self.base_url}:runQuery"
         headers = {"Authorization": f"Bearer {token}"}
         
@@ -97,21 +71,23 @@ class FirestoreREST:
             return []
 
     def _parse_response(self, json_data):
+        """Clean Firestore JSON response."""
         results = []
         for item in json_data:
             if "document" in item:
                 raw_fields = item["document"]["fields"]
                 clean_doc = {}
                 for key, val in raw_fields.items():
+                    # Extract the first value (stringValue, integerValue, etc.)
                     clean_doc[key] = list(val.values())[0]
                 results.append(clean_doc)
         return results
 
-# Initialize Database
+# Initialize
 db_http = FirestoreREST(st.secrets)
 client = genai.Client(api_key=st.secrets["GEMINI_KEY"])
 
-# --- 4. DATA LOGIC ---
+# --- 3. DATA & API ---
 CITY_VARIANTS = {
     "DEL": ["Delhi", "New Delhi"],
     "BLR": ["Bengaluru", "Bangalore"],
@@ -164,7 +140,7 @@ def get_traffic(origin, dest_code):
         return {"sec": elem['duration_in_traffic']['value'], "txt": elem['duration_in_traffic']['text']}
     except: return None
 
-# --- 5. UI ---
+# --- 4. UI ---
 if 'flight_info' not in st.session_state:
     st.session_state.flight_info = None
 
