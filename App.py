@@ -6,8 +6,7 @@ from google.oauth2 import service_account
 from google import genai
 from datetime import datetime, timedelta
 from dateutil import parser
-# --- NEW IMPORT ---
-from streamlit_js_eval import get_geolocation
+from streamlit_js_eval import get_geolocation  # GPS Support
 
 # --- 1. CONFIGURATION ---
 st.set_page_config(page_title="Departly.ai", page_icon="✈️", layout="centered")
@@ -16,12 +15,14 @@ st.set_page_config(page_title="Departly.ai", page_icon="✈️", layout="centere
 class FirestoreREST:
     def __init__(self, secrets):
         try:
+            # Handle both string (JSON) and dict formats for keys
             raw_key = secrets["FIREBASE_KEY"]
             if isinstance(raw_key, str):
                 key_dict = json.loads(raw_key, strict=False)
             else:
                 key_dict = dict(raw_key)
 
+            # Fix newlines in private keys
             if "private_key" in key_dict:
                 key_dict["private_key"] = key_dict["private_key"].replace("\\n", "\n")
             
@@ -72,14 +73,21 @@ class FirestoreREST:
                 results.append(clean_doc)
         return results
 
+# --- FIX: CACHED CONNECTION ---
+# We use @st.cache_resource to initialize the DB only once.
+# We do NOT pass st.secrets as an argument to avoid the UnhashableParamError.
+@st.cache_resource
+def get_db_client():
+    return FirestoreREST(st.secrets)
+
 try:
-    db_http = FirestoreREST(st.secrets)
+    db_http = get_db_client()
     client = genai.Client(api_key=st.secrets["GEMINI_KEY"])
 except Exception as e:
     st.error(f"Service Init Error: {e}")
 
 # --- SETTINGS ---
-MODEL_ID = 'gemini-2.0-flash-exp' # Updated to latest stable experimental if preferred, or keep gemini-1.5-flash
+MODEL_ID = 'gemini-2.0-flash-exp'
 INDIAN_AIRLINES = {
     "IndiGo": "6E", "Air India": "AI", "Vistara": "UK", 
     "SpiceJet": "SG", "Air India Express": "IX", "Akasa Air": "QP",
@@ -130,7 +138,6 @@ def get_traffic(pickup_address, target_airport_code):
     except: pass
     return {"sec": 5400, "txt": "1h 30m (Est)"}
 
-# --- NEW: REVERSE GEOCODING ---
 def reverse_geocode(lat, lng):
     url = f"https://maps.googleapis.com/maps/api/geocode/json?latlng={lat},{lng}&key={st.secrets['GOOGLE_MAPS_KEY']}"
     try:
@@ -146,35 +153,30 @@ st.title("✈️ Departly.ai")
 # PERSISTENT DATA
 if 'flight_info' not in st.session_state: st.session_state.flight_info = None
 if 'journey_meta' not in st.session_state: st.session_state.journey_meta = None
-# Initialize the pickup address in session state if not present
 if 'pickup_address' not in st.session_state: st.session_state.pickup_address = ""
 
 airline_name = st.selectbox("Select Airline", list(INDIAN_AIRLINES.keys()))
 airline_code = INDIAN_AIRLINES[airline_name]
 flight_num = st.text_input("Flight Number", placeholder="e.g. 6433")
 
-# --- MODIFIED: GPS LOGIC ---
+# --- GPS LOGIC ---
 st.write("---")
 col_gps, col_input = st.columns([1, 4])
 with col_gps:
-    # This button triggers the browser prompt
     if st.checkbox("📍 Use GPS"):
         loc_data = get_geolocation()
         if loc_data and 'coords' in loc_data:
             lat = loc_data['coords']['latitude']
             lng = loc_data['coords']['longitude']
-            # Reverse geocode to get a pretty address
             address = reverse_geocode(lat, lng)
             st.session_state.pickup_address = address
             
 with col_input:
-    # We bind the value to session_state so the GPS update reflects here immediately
     p_in = st.text_input("Pickup Point", 
                          value=st.session_state.pickup_address, 
                          placeholder="e.g. Hoodi, Bangalore",
                          key="pickup_input_widget")
     
-    # Sync manual typing back to session state to avoid overwrites
     if p_in != st.session_state.pickup_address:
         st.session_state.pickup_address = p_in
 
@@ -193,7 +195,6 @@ if st.button("Calculate Journey", type="primary", use_container_width=True):
                 total_buffer_sec = traffic['sec'] + (45 * 60) + (30 * 60)
                 leave_dt = takeoff_dt - timedelta(seconds=total_buffer_sec)
                 
-                # Store everything in session state so it survives the next button click
                 st.session_state.flight_info = flight
                 st.session_state.journey_meta = {
                     "leave_time": leave_dt.strftime('%I:%M %p'),
@@ -206,7 +207,7 @@ if st.button("Calculate Journey", type="primary", use_container_width=True):
             else:
                 st.error("Flight not found.")
 
-# --- DISPLAY JOURNEY (This now stays visible) ---
+# --- DISPLAY JOURNEY ---
 if st.session_state.journey_meta:
     j = st.session_state.journey_meta
     st.markdown("---")
