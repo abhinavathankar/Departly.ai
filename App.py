@@ -1,6 +1,5 @@
 import streamlit as st
 import requests
-import json
 import re
 import google.auth.transport.requests
 from google.oauth2 import service_account
@@ -11,58 +10,52 @@ from dateutil import parser
 # --- 1. CONFIGURATION ---
 st.set_page_config(page_title="Departly.ai", page_icon="✈️", layout="centered")
 
-# --- 2. SURGICAL KEY REPAIR (The "Magic" Fix) ---
-def fix_malformed_key(json_str):
+# --- 2. THE REGEX SCRAPER (Bypasses JSON Errors) ---
+def extract_credentials_manually(text_content):
     """
-    Uses Regex to find the 'private_key' block and force-escape 
-    any invisible newlines that cause the 'Invalid control character' error.
+    Scrapes the credentials using Regex, ignoring JSON formatting errors.
     """
-    try:
-        # Pattern to find: "private_key": " ... "
-        # We capture everything inside the quotes
-        pattern = r'("private_key"\s*:\s*")([\s\S]*?)("\s*[,}])'
+    creds = {}
+    
+    # 1. Extract Project ID
+    # Looks for: "project_id": "something"
+    pid_match = re.search(r'"project_id"\s*:\s*"([^"]+)"', text_content)
+    if pid_match:
+        creds["project_id"] = pid_match.group(1)
         
-        match = re.search(pattern, json_str)
-        if match:
-            prefix = match.group(1)   # "private_key": "
-            content = match.group(2)  # The messy key content
-            suffix = match.group(3)   # ", or "}
-            
-            # The Fix: Turn real newlines into literal \n characters
-            clean_content = content.replace('\n', '\\n')
-            
-            # Rebuild the JSON string
-            start, end = match.span()
-            return json_str[:start] + prefix + clean_content + suffix + json_str[end:]
-            
-        return json_str
-    except:
-        return json_str
+    # 2. Extract Client Email
+    # Looks for: "client_email": "something"
+    email_match = re.search(r'"client_email"\s*:\s*"([^"]+)"', text_content)
+    if email_match:
+        creds["client_email"] = email_match.group(1)
+        
+    # 3. Extract Private Key (The Hard Part)
+    # Looks for: "private_key": "ANYTHING HERE"
+    # [^"]* matches everything including newlines until the next quote
+    key_match = re.search(r'"private_key"\s*:\s*"([^"]*)"', text_content)
+    if key_match:
+        raw_key = key_match.group(1)
+        # Fix the key: Convert literal \n to real newlines
+        creds["private_key"] = raw_key.replace("\\n", "\n")
+        
+    return creds
 
-# --- 3. ROBUST FIRESTORE CLIENT ---
+# --- 3. ROBUST REST CLIENT ---
 class FirestoreREST:
     def __init__(self, secrets):
         try:
-            # 1. Get Raw String
-            raw_key = secrets["FIREBASE_KEY"]
+            # Get the raw string from secrets
+            raw_key_string = secrets["FIREBASE_KEY"]
             
-            # 2. Apply Surgical Fix
-            if isinstance(raw_key, str):
-                repaired_json = fix_malformed_key(raw_key)
-                try:
-                    # Try parsing the repaired string
-                    key_dict = json.loads(repaired_json, strict=False)
-                except json.JSONDecodeError:
-                    # Fallback: Try parsing the original (just in case)
-                    key_dict = json.loads(raw_key, strict=False)
-            else:
-                key_dict = dict(raw_key)
-
-            # 3. Double Check Escaping (Redundancy is good here)
-            if "private_key" in key_dict:
-                key_dict["private_key"] = key_dict["private_key"].replace("\\n", "\n")
+            # USE THE SCRAPER instead of json.loads
+            key_dict = extract_credentials_manually(raw_key_string)
             
-            # 4. Authenticate
+            # Validate extraction
+            if "project_id" not in key_dict or "private_key" not in key_dict:
+                st.error("❌ Regex Failed: Could not find 'project_id' or 'private_key' in the secrets string.")
+                st.stop()
+            
+            # Authenticate
             self.creds = service_account.Credentials.from_service_account_info(
                 key_dict, scopes=["https://www.googleapis.com/auth/cloud-platform"]
             )
@@ -70,12 +63,10 @@ class FirestoreREST:
             self.base_url = f"https://firestore.googleapis.com/v1/projects/{self.project_id}/databases/(default)/documents"
             
         except Exception as e:
-            st.error(f"🔥 Critical Auth Failure: {e}")
-            st.warning("Double check that your `FIREBASE_KEY` in secrets is wrapped in triple quotes (`'''` or `\"\"\"`).")
+            st.error(f"🔥 Auth Setup Error: {e}")
             st.stop()
 
     def query_city(self, city_name):
-        """Fetches docs via HTTP (Firewall Bypass)."""
         auth_req = google.auth.transport.requests.Request()
         self.creds.refresh(auth_req)
         token = self.creds.token
