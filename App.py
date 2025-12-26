@@ -12,7 +12,6 @@ from streamlit_js_eval import get_geolocation
 st.set_page_config(page_title="Departly.ai", page_icon="✈️", layout="centered")
 
 # --- 2. OPTIMIZED SERVICES (Cached) ---
-# We cache this function so it doesn't reconnect to Firebase on every click
 @st.cache_resource
 def get_firestore_client(secrets):
     try:
@@ -96,7 +95,7 @@ CITY_VARIANTS = {
 }
 
 # --- 3. HELPER FUNCTIONS (Cached) ---
-@st.cache_data(ttl=300) # Cache flight data for 5 mins to prevent flicker
+@st.cache_data(ttl=300) 
 def get_flight_data(iata_code):
     clean_iata = iata_code.replace(" ", "").upper()
     url = f"https://airlabs.co/api/v9/schedules?flight_iata={clean_iata}&api_key={st.secrets['AIRLABS_KEY']}"
@@ -119,7 +118,7 @@ def get_flight_data(iata_code):
     except: pass
     return None
 
-@st.cache_data(ttl=600) # Cache address lookup to save API calls
+@st.cache_data(ttl=600) 
 def reverse_geocode(lat, lng):
     url = "https://maps.googleapis.com/maps/api/geocode/json"
     params = {"latlng": f"{lat},{lng}", "key": st.secrets["GOOGLE_MAPS_KEY"]}
@@ -131,7 +130,6 @@ def reverse_geocode(lat, lng):
     return None
 
 def get_traffic(pickup_address, target_airport_code):
-    # Traffic changes fast, so we don't cache this too long, or at all
     destination_query = f"{target_airport_code} Airport"
     url = "https://maps.googleapis.com/maps/api/distancematrix/json"
     params = {
@@ -150,7 +148,6 @@ def get_traffic(pickup_address, target_airport_code):
 # --- 4. MAIN UI ---
 st.title("✈️ Departly.ai")
 
-# Session State Initialization
 if 'flight_info' not in st.session_state: st.session_state.flight_info = None
 if 'journey_meta' not in st.session_state: st.session_state.journey_meta = None
 if 'pickup_loc' not in st.session_state: st.session_state.pickup_loc = ""
@@ -165,14 +162,13 @@ with st.container():
     with c2:
         flight_num = st.text_input("Flight Number", placeholder="e.g. 6433")
 
-    # Row 2: Pickup & GPS (Aligned Smoothly)
+    # Row 2: Pickup & GPS (Aligned)
     c3, c4 = st.columns([3, 1]) 
     with c3:
-        p_in = st.text_input("Pickup Point", value=st.session_state.pickup_loc, placeholder="Enter address or use GPS ->")
+        p_in = st.text_input("Pickup Point", value=st.session_state.pickup_loc, placeholder="Address or use GPS ->")
     with c4:
-        st.write("") # Spacer to push button down
         st.write("") 
-        # The GPS Button
+        st.write("") 
         loc_data = get_geolocation(component_key='get_loc', label="📍 Detect")
 
     # GPS Logic Handler
@@ -180,7 +176,6 @@ with st.container():
         lat = loc_data.get('coords', {}).get('latitude')
         lng = loc_data.get('coords', {}).get('longitude')
         if lat and lng:
-            # Only run API if address is not already set or different
             new_address = reverse_geocode(lat, lng)
             if new_address and new_address != st.session_state.pickup_loc:
                 st.session_state.pickup_loc = new_address
@@ -218,7 +213,6 @@ if st.session_state.journey_meta:
     st.markdown("---")
     st.subheader(f"🎫 Flight Dashboard")
     
-    # Flight Metrics
     c_a, c_b = st.columns(2)
     c_a.metric("Origin", j["dep_iata"])
     c_b.metric("Dest", j["arr_iata"])
@@ -227,10 +221,8 @@ if st.session_state.journey_meta:
     c_c.metric("Departure", j["takeoff"])
     c_d.metric("Arrival", j["landing"])
 
-    # Leave Home Card
     st.success(f"### 🚪 Leave Home by: **{j['leave_time']}**")
     
-    # Breakdown (Always Visible)
     with st.expander("⏱️ Journey Breakdown", expanded=True):
         st.write(f"🚗 **Travel to Airport:** {j['traffic_txt']}")
         st.write(f"🛂 **Security Check:** 30 mins")
