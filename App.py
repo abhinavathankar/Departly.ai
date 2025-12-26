@@ -8,7 +8,8 @@ from datetime import datetime, timedelta
 from dateutil import parser
 
 # --- 1. CONFIGURATION ---
-st.set_page_config(page_title="Departly.ai", page_icon="✈️", layout="wide")
+# Using 'centered' layout for better mobile/vertical flow
+st.set_page_config(page_title="Departly.ai", page_icon="✈️", layout="centered")
 
 # --- 2. HTTP CLIENT ---
 class FirestoreREST:
@@ -76,8 +77,10 @@ try:
 except Exception as e:
     st.error(f"Service Init Error: {e}")
 
-# --- MODEL SETTINGS ---
-AVAILABLE_MODELS = ['gemini-3-flash-preview', 'gemini-1.5-flash', 'gemini-1.5-pro']
+# --- SETTINGS ---
+# Hardcoded to Gemini 3 Flash Preview
+MODEL_ID = 'gemini-3-flash-preview'
+
 INDIAN_AIRLINES = {
     "IndiGo": "6E", "Air India": "AI", "Vistara": "UK", 
     "SpiceJet": "SG", "Air India Express": "IX", "Akasa Air": "QP",
@@ -128,31 +131,28 @@ def get_traffic(pickup_address, target_airport_code):
     except: pass
     return {"sec": 5400, "txt": "1h 30m (Est)"}
 
-# --- 4. SIDEBAR LAYOUT ---
-with st.sidebar:
-    st.header("📍 Trip Settings")
+# --- 4. MAIN UI ---
+st.title("✈️ Departly.ai")
+st.caption("Simplified Mobile-First Departure Planner")
+
+# Center inputs
+container = st.container()
+with container:
     airline_name = st.selectbox("Select Airline", list(INDIAN_AIRLINES.keys()))
     airline_code = INDIAN_AIRLINES[airline_name]
+    
+    # Split number and pickup on desktop, stack on mobile
     flight_num = st.text_input("Flight Number", placeholder="e.g. 6433")
     p_in = st.text_input("Pickup Point", placeholder="e.g. Hoodi, Bangalore")
     
-    st.divider()
-    st.header("🤖 AI Settings")
-    # UPDATED: Selectbox now correctly defaults to gemini-3-flash-preview
-    selected_model = st.selectbox("Itinerary Model", AVAILABLE_MODELS, index=0)
-    days = st.slider("Trip Duration (Days)", 1, 7, 3)
-    
     calc_button = st.button("Calculate Journey", type="primary", use_container_width=True)
-
-# --- 5. MAIN UI ---
-st.title("✈️ Departly.ai")
 
 if 'flight_info' not in st.session_state:
     st.session_state.flight_info = None
 
 if calc_button:
     if not (flight_num and p_in):
-        st.warning("Please enter both flight number and pickup point in the sidebar.")
+        st.warning("Please enter both flight number and pickup point.")
     else:
         full_flight_code = f"{airline_code}{flight_num}"
         with st.spinner(f"Analyzing {full_flight_code}..."):
@@ -160,15 +160,20 @@ if calc_button:
             if flight:
                 st.session_state.flight_info = flight
                 
-                # Ticket Dashboard
-                st.subheader(f"🎫 Flight Dashboard: {flight.get('flight_iata')}")
-                t1, t2, t3, t4 = st.columns(4)
-                t1.metric("Date", flight.get('dep_time').split()[0])
-                t2.metric("Route", f"{flight.get('dep_iata')} ➝ {flight.get('arr_iata')}")
-                t3.metric("Departs", parser.parse(flight['dep_time']).strftime('%I:%M %p'))
-                t4.metric("Arrives", parser.parse(flight['arr_time']).strftime('%I:%M %p'))
+                # DASHBOARD
+                st.markdown("---")
+                st.subheader(f"🎫 Flight {flight.get('flight_iata')}")
+                
+                # Metrics that stack on mobile
+                m1, m2 = st.columns(2)
+                m1.metric("Origin", flight.get('dep_iata'))
+                m2.metric("Destination", flight.get('arr_iata'))
+                
+                m3, m4 = st.columns(2)
+                m3.metric("Departure", parser.parse(flight['dep_time']).strftime('%I:%M %p'))
+                m4.metric("Arrival", parser.parse(flight['arr_time']).strftime('%I:%M %p'))
 
-                # Traffic Calculation to ORIGIN
+                # TRAFFIC Calculation to ORIGIN
                 traffic = get_traffic(p_in, flight['origin_code'])
                 takeoff_dt = parser.parse(flight['dep_time'])
                 
@@ -178,22 +183,26 @@ if calc_button:
                 
                 st.success(f"### 🚪 Leave Home by: **{leave_dt.strftime('%I:%M %p')}**")
                 
-                c1, c2, c3 = st.columns(3)
-                c1.metric("Traffic to Airport", traffic['txt'])
-                c2.metric("Security & Bags", "30 mins")
-                c3.metric("Boarding Gate", "45 mins")
+                # Final Stats
+                with st.expander("⏱️ Breakdown"):
+                    st.write(f"🚗 Traffic to Airport: {traffic['txt']}")
+                    st.write(f"🛂 Security & Bags: 30 mins")
+                    st.write(f"✈️ Boarding Gate: 45 mins")
             else:
-                st.error("Flight not found. Please re-check the number in the sidebar.")
+                st.error("Flight not found. Please re-check the details.")
 
-# --- 6. ITINERARY SECTION ---
+# --- 5. ITINERARY SECTION ---
 if st.session_state.flight_info:
-    st.divider()
+    st.markdown("---")
     targets = st.session_state.flight_info['targets']
     display = st.session_state.flight_info['display']
-    st.subheader(f"🗺️ {days}-Day Itinerary for {display}")
+    st.subheader(f"🗺️ Plan Your Trip")
     
-    if st.button("Generate Plan with Gemini 3", use_container_width=True):
-        with st.spinner(f"Using {selected_model} to plan..."):
+    days = st.slider("Trip Duration (Days)", 1, 7, 3)
+    
+    # Simple centered button for generation
+    if st.button(f"Generate Itinerary for {display}", use_container_width=True):
+        with st.spinner("Generating with Gemini 3 Flash..."):
             rag_docs = []
             for city in targets:
                 rag_docs.extend(db_http.query_city(city.strip()))
@@ -202,7 +211,8 @@ if st.session_state.flight_info:
                 context = "\n".join([f"• {d.get('Name')} ({d.get('Type')})" for d in rag_docs])
                 prompt = f"Create a {days}-day itinerary for {display} using only this data:\n{context}"
                 try:
-                    res = client.models.generate_content(model=selected_model, contents=prompt)
+                    # Model ID is now hardcoded to gemini-3-flash-preview
+                    res = client.models.generate_content(model=MODEL_ID, contents=prompt)
                     st.markdown(res.text)
                 except Exception as e:
                     st.error(f"AI Error: {e}")
