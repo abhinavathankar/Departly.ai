@@ -8,9 +8,12 @@ from datetime import datetime, timedelta
 from dateutil import parser
 
 # --- 1. CONFIGURATION ---
-st.set_page_config(page_title="Departly.ai", page_icon="✈️", layout="centered")
+st.set_page_config(page_title="Departly Debugger", page_icon="🐞", layout="centered")
 
-# --- 2. ROBUST HTTP CLIENT ---
+st.title("🐞 Departly Debug Mode")
+st.write("This mode prints every step to find the hidden error.")
+
+# --- 2. HTTP CLIENT ---
 class FirestoreREST:
     def __init__(self, secrets):
         try:
@@ -33,7 +36,6 @@ class FirestoreREST:
             st.stop()
 
     def query_city(self, city_name):
-        # Refresh Token
         auth_req = google.auth.transport.requests.Request()
         self.creds.refresh(auth_req)
         token = self.creds.token
@@ -74,157 +76,110 @@ class FirestoreREST:
                 results.append(clean_doc)
         return results
 
-db_http = FirestoreREST(st.secrets)
-client = genai.Client(api_key=st.secrets["GEMINI_KEY"])
+# Initialize
+try:
+    db_http = FirestoreREST(st.secrets)
+    client = genai.Client(api_key=st.secrets["GEMINI_KEY"])
+except Exception as e:
+    st.error(f"Startup Error: {e}")
+
 AVAILABLE_MODELS = ['gemini-2.0-flash-exp', 'gemini-1.5-flash', 'gemini-1.5-pro']
+CITY_VARIANTS = {"DEL": ["Delhi"], "BLR": ["Bangalore"], "BOM": ["Mumbai"]}
 
-# --- 3. LOGIC ---
-CITY_VARIANTS = {
-    "DEL": ["Delhi", "New Delhi"],
-    "BLR": ["Bengaluru", "Bangalore"],
-    "BOM": ["Mumbai"],
-    "MAA": ["Chennai"],
-    "HYD": ["Hyderabad"],
-    "GOI": ["Goa"],
-    "JAI": ["Jaipur"],
-    "CCU": ["Kolkata"]
-}
-
-def get_rag_data_http(target_cities):
-    all_docs = []
-    for city in target_cities:
-        clean_city = city.strip()
-        docs = db_http.query_city(clean_city)
-        for d in docs:
-            if d.get('Name'):
-                entry = (f"• {d.get('Name')} | Type: {d.get('Type')} | "
-                         f"Fee: {d.get('Entrance Fee in INR')} | "
-                         f"Time: {d.get('time needed to visit in hrs')}h")
-                all_docs.append(entry)
-    return all_docs
-
-def get_flight_data(flight_input):
+# --- 3. DEBUGGED FLIGHT FUNCTION ---
+def get_flight_data_debug(flight_input):
     clean_iata = flight_input.replace(" ", "").upper()
-    url = f"https://airlabs.co/api/v9/schedules?flight_iata={clean_iata}&api_key={st.secrets['AIRLABS_KEY']}"
+    api_key = st.secrets.get('AIRLABS_KEY', '')
     
-    # NO MORE SILENT FAILURES. WE PRINT THE ERROR.
+    st.write(f"🔹 **Step 1:** Searching API for `{clean_iata}`...")
+    
+    if not api_key:
+        st.error("❌ CRITICAL: 'AIRLABS_KEY' is missing from secrets.toml")
+        return None
+
+    url = f"https://airlabs.co/api/v9/schedules?flight_iata={clean_iata}&api_key={api_key}"
+    
     try:
-        res = requests.get(url, timeout=5)
-        res_json = res.json()
+        res = requests.get(url, timeout=10)
+        st.write(f"🔹 **Step 2:** API Status Code: `{res.status_code}`")
         
-        # DEBUG PRINT TO SCREEN
-        if "error" in res_json:
-            st.error(f"❌ Airlabs API Error: {res_json['error']['message']}")
+        try:
+            res_json = res.json()
+        except:
+            st.error("❌ API returned non-JSON response.")
+            st.text(res.text)
             return None
-            
+
+        # SHOW RAW RESPONSE IMMEDIATELY
+        with st.expander("🔍 Click to see RAW API Response", expanded=True):
+            st.json(res_json)
+
+        if "error" in res_json:
+            st.error(f"❌ API Error Message: {res_json['error'].get('message')}")
+            return None
+
         if "response" in res_json and res_json["response"]:
             f_data = res_json["response"][0]
+            st.success("✅ **Step 3:** Flight Data Found!")
+            
+            # Map Data
             code = f_data.get('arr_iata') or f_data.get('arr_icao')
             f_data['dest_code'] = code
             
-            # Dynamic Fallback
             if code in CITY_VARIANTS:
                 f_data['targets'] = CITY_VARIANTS[code]
                 f_data['display'] = CITY_VARIANTS[code][0]
             else:
-                city_from_api = f_data.get('arr_city', 'Unknown City')
-                f_data['targets'] = [city_from_api]
-                f_data['display'] = city_from_api
+                city_api = f_data.get('arr_city', 'Unknown')
+                f_data['targets'] = [city_api]
+                f_data['display'] = city_api
             
             return f_data
         else:
-            st.warning(f"⚠️ API returned success but 0 flights found for {clean_iata}. Response: {res_json}")
+            st.warning("⚠️ **Step 3 Failed:** API returned success (200) but the 'response' list is empty. This means AirLabs has no data for this flight number today.")
             return None
-            
+
     except Exception as e:
-        st.error(f"❌ Connection Failed: {e}")
+        st.error(f"❌ Connection Exception: {e}")
         return None
 
 def get_traffic(origin, dest_code):
-    url = "https://maps.googleapis.com/maps/api/distancematrix/json"
-    params = {"origins": origin, "destinations": f"{dest_code} Airport", "mode": "driving", "departure_time": "now", "key": st.secrets["GOOGLE_MAPS_KEY"]}
-    try:
-        data = requests.get(url, params=params, timeout=5).json()
-        if "rows" in data and data["rows"]:
-            elem = data['rows'][0]['elements'][0]
-            if elem['status'] == "OK":
-                return {"sec": elem['duration_in_traffic']['value'], "txt": elem['duration_in_traffic']['text']}
-    except: pass
-    return {"sec": 5400, "txt": "1h 30m (Est)"}
+    # Simplified for debug
+    return {"sec": 5400, "txt": "1h 30m (Debug Default)"}
 
 # --- 4. UI ---
-if 'flight_info' not in st.session_state:
-    st.session_state.flight_info = None
-
-st.title("✈️ Departly.ai")
 col1, col2 = st.columns(2)
-with col1: f_in = st.text_input("Flight Number", placeholder="e.g. 6E 6433")
-with col2: p_in = st.text_input("Pickup Point", placeholder="e.g. Hoodi, Bangalore")
+with col1: f_in = st.text_input("Flight Number", value="6E 6433")
+with col2: p_in = st.text_input("Pickup Point", value="Hoodi, Bangalore")
 
-if st.button("Calculate Departure", type="primary", use_container_width=True):
-    # REMOVED SPINNER TO SEE ERRORS IMMEDIATELY
-    st.write("🔄 Connecting to Flight API...")
-    flight = get_flight_data(f_in)
-    
-    if flight:
-        st.session_state.flight_info = flight
-        
-        # --- THE BLUE BOXES ---
-        st.divider()
-        st.markdown("### 🎫 Flight Ticket Details")
-        
-        t1, t2, t3, t4 = st.columns(4)
-        t1.metric("Flight", flight.get('flight_iata', 'N/A'))
-        t2.metric("Date", flight.get('dep_time', 'N/A').split()[0])
-        t3.metric("Origin", f"{flight.get('dep_city')} ({flight.get('dep_iata')})")
-        t4.metric("Dest", f"{flight.get('arr_city')} ({flight.get('arr_iata')})")
-        
-        d1, d2 = st.columns(2)
-        d1.info(f"🛫 **Departure:** {flight.get('dep_time')}")
-        d2.info(f"🛬 **Arrival:** {flight.get('arr_time')}")
-        
-        st.write("**Debug JSON:**")
-        st.json(flight)
-        # ----------------------
-
-        traffic = get_traffic(p_in, flight['dest_code'])
-        
-        takeoff_dt = parser.parse(flight['dep_time'])
-        total_buffer_sec = traffic['sec'] + (45 * 60) + (60 * 60)
-        leave_dt = takeoff_dt - timedelta(seconds=total_buffer_sec)
-        
-        st.success(f"### 🚪 Leave Home by: **{leave_dt.strftime('%I:%M %p')}**")
-
-    else:
-        st.error("🛑 Calculation Stopped: Flight Data could not be retrieved.")
-
-# --- 5. ITINERARY SECTION ---
-if st.session_state.flight_info:
+if st.button("Run Debug Trace", type="primary"):
     st.divider()
-    targets = st.session_state.flight_info['targets']
-    display = st.session_state.flight_info['display']
     
-    st.subheader(f"🗺️ Guide for {display}")
+    # 1. GET FLIGHT
+    flight = get_flight_data_debug(f_in)
     
-    c1, c2 = st.columns([1, 2])
-    with c1: days = st.slider("Trip Duration (Days)", 1, 7, 3)
-    with c2: selected_model = st.selectbox("AI Model", AVAILABLE_MODELS, index=1)
-    
-    if st.button("Generate Verified Itinerary", use_container_width=True):
-        with st.spinner(f"Fetching verified data for {display}..."):
-            rag_docs = get_rag_data_http(targets)
+    # 2. CHECK RESULT
+    if flight:
+        st.divider()
+        st.header("🎫 FLIGHT DASHBOARD")
+        
+        # BLUE BOXES
+        c1, c2, c3, c4 = st.columns(4)
+        c1.info(f"**Flight:** {flight.get('flight_iata')}")
+        c2.info(f"**Departs:** {flight.get('dep_time')}")
+        c3.info(f"**Arrives:** {flight.get('arr_time')}")
+        c4.info(f"**Dest:** {flight.get('dest_code')}")
+        
+        # 3. GET ITINERARY DATA
+        st.divider()
+        st.write(f"🔹 **Step 4:** Querying Database for {flight['targets']}...")
+        docs = get_rag_data_http(flight['targets'])
+        
+        if docs:
+            st.success(f"✅ **Step 5:** Found {len(docs)} documents.")
+            st.write(docs)
+        else:
+            st.warning("⚠️ **Step 5:** Database returned 0 documents.")
             
-            with st.expander(f"📚 Data Inspector ({len(rag_docs)} records)"):
-                st.write(rag_docs)
-
-            if rag_docs:
-                context = "\n".join(rag_docs)
-                prompt = f"Create a {days}-day itinerary for {display} using this data:\n{context}"
-                try:
-                    res = client.models.generate_content(model=selected_model, contents=prompt)
-                    st.markdown("### ✨ Your Verified Itinerary")
-                    st.markdown(res.text)
-                except Exception as e:
-                    st.error(f"AI Error: {e}")
-            else:
-                st.warning("No records found via HTTP.")
+    else:
+        st.error("🛑 STOP: Could not proceed because Flight Data was None.")
