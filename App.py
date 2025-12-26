@@ -13,13 +13,13 @@ st.set_page_config(page_title="Departly.ai", page_icon="✈️", layout="centere
 
 # --- 2. OPTIMIZED SERVICES (Cached) ---
 @st.cache_resource
-def get_firestore_client(secrets):
+def get_firestore_client(firebase_key_json):
+    # We pass ONLY the JSON string or dict, not the whole st.secrets object
     try:
-        raw_key = secrets["FIREBASE_KEY"]
-        if isinstance(raw_key, str):
-            key_dict = json.loads(raw_key, strict=False)
+        if isinstance(firebase_key_json, str):
+            key_dict = json.loads(firebase_key_json, strict=False)
         else:
-            key_dict = dict(raw_key)
+            key_dict = dict(firebase_key_json)
 
         if "private_key" in key_dict:
             key_dict["private_key"] = key_dict["private_key"].replace("\\n", "\n")
@@ -33,7 +33,9 @@ def get_firestore_client(secrets):
 
 class FirestoreREST:
     def __init__(self, secrets):
-        self.creds, self.project_id = get_firestore_client(secrets)
+        # FIX: We pass only the specific key section, which is hashable
+        self.creds, self.project_id = get_firestore_client(dict(secrets["FIREBASE_KEY"]))
+        
         if not self.creds:
             st.error("🔥 Auth Failed")
             st.stop()
@@ -78,6 +80,7 @@ class FirestoreREST:
         return results
 
 # Initialize Services
+# We convert the secrets section to a standard dict to ensure it is hashable
 db_http = FirestoreREST(st.secrets)
 client = genai.Client(api_key=st.secrets["GEMINI_KEY"])
 
