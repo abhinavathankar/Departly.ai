@@ -128,19 +128,17 @@ def get_traffic(pickup_address, target_airport_code):
     except: pass
     return {"sec": 5400, "txt": "1h 30m (Est)"}
 
-# --- 4. MAIN UI (CENTERED) ---
+# --- 4. MAIN UI ---
 st.title("✈️ Departly.ai")
+
+# PERSISTENT DATA
+if 'flight_info' not in st.session_state: st.session_state.flight_info = None
+if 'journey_meta' not in st.session_state: st.session_state.journey_meta = None
 
 airline_name = st.selectbox("Select Airline", list(INDIAN_AIRLINES.keys()))
 airline_code = INDIAN_AIRLINES[airline_name]
 flight_num = st.text_input("Flight Number", placeholder="e.g. 6433")
 p_in = st.text_input("Pickup Point", placeholder="e.g. Hoodi, Bangalore")
-
-# DASHBOARD PLACEHOLDER (Ensures background isn't messy)
-dashboard_placeholder = st.empty()
-
-if 'flight_info' not in st.session_state:
-    st.session_state.flight_info = None
 
 if st.button("Calculate Journey", type="primary", use_container_width=True):
     if not (flight_num and p_in):
@@ -150,37 +148,44 @@ if st.button("Calculate Journey", type="primary", use_container_width=True):
         with st.spinner(f"Analyzing {full_flight_code}..."):
             flight = get_flight_data(full_flight_code)
             if flight:
-                st.session_state.flight_info = flight
+                traffic = get_traffic(p_in, flight['origin_code'])
+                takeoff_dt = parser.parse(flight['dep_time'])
+                total_buffer_sec = traffic['sec'] + (45 * 60) + (30 * 60)
+                leave_dt = takeoff_dt - timedelta(seconds=total_buffer_sec)
                 
-                with dashboard_placeholder.container():
-                    st.markdown("---")
-                    st.subheader(f"🎫 Flight {flight.get('flight_iata')}")
-                    
-                    # Information Grid
-                    c1, c2 = st.columns(2)
-                    c1.metric("From", flight.get('dep_iata'))
-                    c2.metric("To", flight.get('arr_iata'))
-                    
-                    c3, c4 = st.columns(2)
-                    c3.metric("Takeoff", parser.parse(flight['dep_time']).strftime('%I:%M %p'))
-                    c4.metric("Landing", parser.parse(flight['arr_time']).strftime('%I:%M %p'))
-
-                    traffic = get_traffic(p_in, flight['origin_code'])
-                    takeoff_dt = parser.parse(flight['dep_time'])
-                    
-                    # Logic: Traffic + 45m Boarding + 30m Security
-                    total_buffer_sec = traffic['sec'] + (45 * 60) + (30 * 60)
-                    leave_dt = takeoff_dt - timedelta(seconds=total_buffer_sec)
-                    
-                    st.success(f"### 🚪 Leave Home by: **{leave_dt.strftime('%I:%M %p')}**")
-                    
-                    # RESTORED: JOURNEY BREAKDOWN DROPDOWN
-                    with st.expander("⏱️ Journey Breakdown", expanded=True):
-                        st.write(f"🚗 **Travel to Airport:** {traffic['txt']}")
-                        st.write(f"🛂 **Security & Baggage Drop:** 30 mins")
-                        st.write(f"✈️ **Boarding Gate Close:** 45 mins")
+                # Store everything in session state so it survives the next button click
+                st.session_state.flight_info = flight
+                st.session_state.journey_meta = {
+                    "leave_time": leave_dt.strftime('%I:%M %p'),
+                    "traffic_txt": traffic['txt'],
+                    "dep_iata": flight.get('dep_iata'),
+                    "arr_iata": flight.get('arr_iata'),
+                    "takeoff": parser.parse(flight['dep_time']).strftime('%I:%M %p'),
+                    "landing": parser.parse(flight['arr_time']).strftime('%I:%M %p')
+                }
             else:
                 st.error("Flight not found.")
+
+# --- DISPLAY JOURNEY (This now stays visible) ---
+if st.session_state.journey_meta:
+    j = st.session_state.journey_meta
+    st.markdown("---")
+    st.subheader(f"🎫 Flight Dashboard")
+    
+    c1, c2 = st.columns(2)
+    c1.metric("From", j["dep_iata"])
+    c2.metric("To", j["arr_iata"])
+    
+    c3, c4 = st.columns(2)
+    c3.metric("Takeoff", j["takeoff"])
+    c4.metric("Landing", j["landing"])
+
+    st.success(f"### 🚪 Leave Home by: **{j['leave_time']}**")
+    
+    with st.expander("⏱️ Journey Breakdown", expanded=True):
+        st.write(f"🚗 **Travel to Airport:** {j['traffic_txt']}")
+        st.write(f"🛂 **Security & Baggage Drop:** 30 mins")
+        st.write(f"✈️ **Boarding Gate Close:** 45 mins")
 
 # --- 5. ITINERARY SECTION ---
 if st.session_state.flight_info:
@@ -191,9 +196,7 @@ if st.session_state.flight_info:
     days = st.slider("Trip Duration (Days)", 1, 7, 3)
     
     if st.button(f"Generate Itinerary (Gemini 3 Flash)", use_container_width=True):
-        # We clear the dashboard placeholder to prevent background "bleed"
-        dashboard_placeholder.empty()
-        
+        # We NO LONGER clear the placeholder, so the breakdown stays visible.
         with st.spinner("Creating your custom itinerary..."):
             rag_docs = []
             for city in targets:
@@ -204,6 +207,7 @@ if st.session_state.flight_info:
                 prompt = f"Create a {days}-day itinerary for {display} using only this data:\n{context}"
                 try:
                     res = client.models.generate_content(model=MODEL_ID, contents=prompt)
+                    st.markdown("### ✨ Your Verified Itinerary")
                     st.markdown(res.text)
                 except Exception as e:
                     st.error(f"AI Error: {e}")
