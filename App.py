@@ -79,7 +79,9 @@ try:
 except Exception as e:
     st.error(f"Service Init Error: {e}")
 
-AVAILABLE_MODELS = ['gemini-1.5-flash', 'gemini-1.5-pro', 'gemini-2.0-flash-exp']
+# --- MODEL UPDATE: Prioritizing the Newest Flash Model ---
+AVAILABLE_MODELS = ['gemini-2.0-flash-exp', 'gemini-1.5-flash', 'gemini-1.5-pro']
+
 INDIAN_AIRLINES = {
     "IndiGo": "6E",
     "Air India": "AI",
@@ -149,10 +151,8 @@ def get_flight_data(iata_code):
 
 def get_traffic(pickup_address, target_airport_code):
     """
-    Calculates traffic from Pickup Address -> Target Airport
+    Calculates traffic from Pickup Address -> Target Airport (Origin of Flight)
     """
-    # Explicitly append "Airport" to the code (e.g., "BLR Airport")
-    # This ensures Google Maps finds the airport, not the city center.
     destination_query = f"{target_airport_code} Airport"
     
     url = "https://maps.googleapis.com/maps/api/distancematrix/json"
@@ -214,8 +214,8 @@ if st.button("Calculate Journey", type="primary", use_container_width=True):
                 with st.expander("🔍 See Raw API Data"):
                     st.json(flight)
 
-                # --- TRAFFIC LOGIC (FIXED) ---
-                # We pass flight['origin_code'] (e.g., BLR) as the drive destination
+                # --- CORRECTED TRAFFIC LOGIC ---
+                # Calculate drive to ORIGIN airport (Where you board)
                 traffic = get_traffic(p_in, flight['origin_code'])
                 
                 takeoff_dt = parser.parse(flight['dep_time'])
@@ -231,7 +231,6 @@ if st.button("Calculate Journey", type="primary", use_container_width=True):
                 
                 # Breakdown Panel
                 c1, c2, c3, c4 = st.columns(4)
-                # Show the user WHERE they are driving to
                 c1.metric("Drive To", f"{flight['origin_code']} Airport")
                 c2.metric("Traffic", traffic['txt'])
                 c3.metric("Boarding", "45 mins")
@@ -250,7 +249,9 @@ if st.session_state.flight_info:
     
     c1, c2 = st.columns([1, 2])
     with c1: days = st.slider("Duration (Days)", 1, 7, 3)
-    with c2: selected_model = st.selectbox("AI Model", AVAILABLE_MODELS, index=0)
+    with c2: 
+        # Default to index 0 (gemini-2.0-flash-exp) for speed
+        selected_model = st.selectbox("AI Model", AVAILABLE_MODELS, index=0)
     
     if st.button("Generate Verified Itinerary", use_container_width=True):
         with st.spinner(f"Querying Knowledge Base for {display}..."):
