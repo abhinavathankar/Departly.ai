@@ -10,220 +10,157 @@ from dateutil import parser
 # --- 1. CONFIGURATION ---
 st.set_page_config(page_title="Departly.ai", page_icon="✈️", layout="centered")
 
-# --- 2. FIREBASE CONNECTION (THE FIX) ---
-if not firebase_admin._apps:
-    try:
-        # 1. Load the string from secrets
-        raw_key = st.secrets["FIREBASE_KEY"]
-        
-        # 2. Convert to dictionary
-        if isinstance(raw_key, str):
-            key_dict = json.loads(raw_key)
-        else:
-            key_dict = dict(raw_key)
-        
-        # 3. CRITICAL REPAIR LINE
-        # This converts the text "\n" into actual newlines.
-        # Without this, the app hangs forever.
-        if "private_key" in key_dict:
-            key_dict["private_key"] = key_dict["private_key"].replace("\\n", "\n")
-        
-        # 4. Connect
-        cred = credentials.Certificate(key_dict)
-        firebase_admin.initialize_app(cred)
-        print("✅ Firebase Connected Successfully")
-        
-    except Exception as e:
-        st.error(f"🔥 Authentication Error: {e}")
-        st.stop()
+# --- 2. FIREBASE CONNECTION (With Cache) ---
+@st.cache_resource
+def get_db():
+    """Initializes Firebase only once per session."""
+    if not firebase_admin._apps:
+        try:
+            raw_key = st.secrets["FIREBASE_KEY"]
+            key_dict = json.loads(raw_key) if isinstance(raw_key, str) else dict(raw_key)
+            
+            # The safety fix for newlines
+            if "private_key" in key_dict:
+                key_dict["private_key"] = key_dict["private_key"].replace("\\n", "\n")
+            
+            cred = credentials.Certificate(key_dict)
+            firebase_admin.initialize_app(cred)
+        except Exception as e:
+            st.error(f"🔥 Auth Error: {e}")
+            st.stop()
+    return firestore.client()
 
-db = firestore.client()
+db = get_db()
 client = genai.Client(api_key=st.secrets["GEMINI_KEY"])
 
-# --- 3. INTELLIGENT CITY MAPPING ---
-# Maps Airport Codes -> List of synonyms to search in Firestore
-CITY_VARIANTS = {
-    "DEL": ["Delhi", "New Delhi"],
-    "BLR": ["Bengaluru", "Bangalore"],
-    "BOM": ["Mumbai"],
-    "MAA": ["Chennai"],
-    "CCU": ["Kolkata"],
-    "HYD": ["Hyderabad"],
-    "GOI": ["Goa"],
-    "AMD": ["Ahmedabad"],
-    "PNQ": ["Pune"],
-    "JAI": ["Jaipur"],
-    "COK": ["Kochi", "Cochin"],
-    "VNS": ["Varanasi"],
-    "IXC": ["Chandigarh"],
-    "ATQ": ["Amritsar"],
-    "JGA": ["Jamnagar"],
-    "IXB": ["Darjeeling", "Siliguri"]
-}
+# --- 3. DATA FUNCTIONS (With Caching) ---
 
-# --- 4. CORE FUNCTIONS ---
+# CACHING THIS FUNCTION STOPS THE "LOOP OF DEATH"
+@st.cache_data(ttl=3600) 
+def fetch_rag_data(city_names):
+    """Queries Firestore and caches the result for 1 hour."""
+    all_docs = []
+    logs = []
+    
+    # Use the DB client from the outer scope
+    db_client = firestore.client()
+    
+    for city in city_names:
+        clean_city = city.strip()
+        logs.append(f"Querying: {clean_city}")
+        try:
+            # stream() is efficient for larger reads
+            docs = db_client.collection("itineraries_knowledge_base").where("City", "==", clean_city).stream()
+            
+            count = 0
+            for doc in docs:
+                d = doc.to_dict()
+                if d.get('Name'):
+                    # Format data tightly for the LLM
+                    entry = (f"• {d.get('Name')} | {d.get('Type')} | "
+                             f"Fee: {d.get('Entrance Fee in INR')} INR | "
+                             f"Time: {d.get('time needed to visit in hrs')}h")
+                    all_docs.append(entry)
+                    count += 1
+            logs.append(f"  -> Found {count} items")
+        except Exception as e:
+            logs.append(f"  -> Error: {e}")
+            
+    return all_docs, logs
 
 def get_flight_data(flight_input):
-    """Fetches flight and determines target cities."""
     clean_iata = flight_input.replace(" ", "").upper()
     url = f"https://airlabs.co/api/v9/schedules?flight_iata={clean_iata}&api_key={st.secrets['AIRLABS_KEY']}"
-    
     try:
         res = requests.get(url).json()
         if "response" in res and res["response"]:
             f_data = res["response"][0]
-            
-            # Identify Destination Code
             code = f_data.get('arr_iata') or f_data.get('arr_icao')
             f_data['dest_code'] = code
-            
-            # Map Code to City List
-            if code in CITY_VARIANTS:
-                f_data['targets'] = CITY_VARIANTS[code]
-                f_data['display'] = CITY_VARIANTS[code][0]
-            else:
-                # Fallback: API Lookup for rare airports
-                try:
-                    air_url = f"https://airlabs.co/api/v9/airports?iata_code={code}&api_key={st.secrets['AIRLABS_KEY']}"
-                    air_res = requests.get(air_url).json()
-                    city = air_res["response"][0].get('city')
-                    f_data['targets'] = [city] if city else []
-                    f_data['display'] = city if city else "Unknown"
-                except:
-                    f_data['targets'] = []
-                    f_data['display'] = "Unknown"
-                
             return f_data
-    except Exception as e:
-        st.error(f"Flight API Error: {e}")
+    except: pass
     return None
 
-def get_rag_data(target_cities):
-    """
-    Loops through synonyms (e.g. 'Delhi', 'New Delhi') to fetch data.
-    """
-    all_docs = []
-    
-    for city in target_cities:
-        clean_city = city.strip()
-        try:
-            # Simple query
-            docs = db.collection("itineraries_knowledge_base").where("City", "==", clean_city).stream()
-            
-            for doc in docs:
-                d = doc.to_dict()
-                if d.get('Name'):
-                    # Create a clean text block for the AI
-                    entry = (f"• {d.get('Name')} ({d.get('Type')}): {d.get('Significance')}. "
-                             f"Fee: {d.get('Entrance Fee in INR')} INR. "
-                             f"Time: {d.get('time needed to visit in hrs')}h. ")
-                    all_docs.append(entry)
-        except Exception as e:
-            print(f"Error querying {city}: {e}")
-            
-    return all_docs
+def resolve_city_targets(code):
+    """Maps IATA Code to City Synonyms"""
+    CITY_VARIANTS = {
+        "DEL": ["Delhi", "New Delhi"],
+        "BLR": ["Bengaluru", "Bangalore"],
+        "BOM": ["Mumbai"],
+        "MAA": ["Chennai"],
+        "CCU": ["Kolkata"],
+        "HYD": ["Hyderabad"],
+        "GOI": ["Goa"],
+        "AMD": ["Ahmedabad"],
+        "PNQ": ["Pune"],
+        "JAI": ["Jaipur"],
+        "COK": ["Kochi", "Cochin"],
+        "IXC": ["Chandigarh"],
+        "ATQ": ["Amritsar"],
+        "IXB": ["Darjeeling", "Siliguri"]
+    }
+    return CITY_VARIANTS.get(code, ["Unknown"])
 
-def get_traffic(origin, dest_code):
-    url = "https://maps.googleapis.com/maps/api/distancematrix/json"
-    params = {"origins": origin, "destinations": f"{dest_code} Airport", "mode": "driving", "departure_time": "now", "key": st.secrets["GOOGLE_MAPS_KEY"]}
-    try:
-        data = requests.get(url, params=params).json()
-        elem = data['rows'][0]['elements'][0]
-        return {"sec": elem['duration_in_traffic']['value'], "txt": elem['duration_in_traffic']['text']}
-    except: return None
-
-# --- 5. UI LOGIC ---
+# --- 4. UI LOGIC ---
 
 if 'flight_info' not in st.session_state:
     st.session_state.flight_info = None
 
 st.title("✈️ Departly.ai")
-st.write("Precision Flight Planning + Database-Grounded Itineraries")
+st.write("Precision Planning with Persistent Data.")
 
 col1, col2 = st.columns(2)
 with col1: f_in = st.text_input("Flight Number", placeholder="e.g. 6E 6433")
 with col2: p_in = st.text_input("Pickup Point", placeholder="e.g. Hoodi, Bangalore")
 
 if st.button("Calculate Departure", type="primary", use_container_width=True):
-    with st.spinner("Analyzing Flight Network..."):
+    with st.spinner("Processing..."):
         flight = get_flight_data(f_in)
         if flight:
+            # Save to session state immediately
             st.session_state.flight_info = flight
-            traffic = get_traffic(p_in, flight['dep_iata'])
             
-            if traffic:
-                takeoff = parser.parse(flight['dep_time'])
-                # 45m boarding + traffic + 60m buffer
-                leave = (takeoff - timedelta(minutes=45)) - timedelta(seconds=traffic['sec'] + (60 * 60)) 
-                
-                st.balloons()
-                st.success(f"### 🚪 Leave Home by: **{leave.strftime('%I:%M %p')}**")
-                
-                st.info(f"Flight **{flight['flight_iata']}** to **{flight['display']}** ({flight['dest_code']})")
-                
-                m1, m2, m3 = st.columns(3)
-                m1.metric("Takeoff", takeoff.strftime("%H:%M"))
-                m2.metric("Traffic", traffic['txt'])
-                m3.metric("Status", "On Time")
-            else:
-                st.error("Could not find route. Check Pickup Point.")
+            # Simple Time Calc
+            takeoff = parser.parse(flight['dep_time'])
+            st.success(f"Flight Confirmed: **{flight['dest_code']}**")
         else:
             st.error("Flight not found.")
 
-# --- 6. RAG ITINERARY GENERATOR ---
+# --- 5. RAG SECTION (PERSISTENT) ---
 if st.session_state.flight_info:
     st.divider()
     
-    current_targets = st.session_state.flight_info['targets']
-    display_city = st.session_state.flight_info['display']
+    code = st.session_state.flight_info['dest_code']
+    targets = resolve_city_targets(code)
+    display_city = targets[0]
     
-    st.subheader(f"🗺️ Plan Your {display_city} Trip")
+    st.subheader(f"🗺️ Guide for {display_city}")
     
-    # Manual Override for 'Unknown' cities
-    if display_city == "Unknown" or not current_targets:
-        st.warning("⚠️ City not automatically matched.")
-        manual_city = st.selectbox("Select City Manually:", ["Delhi", "Mumbai", "Bangalore", "Goa", "Hyderabad", "Kolkata", "Jaipur"])
-        current_targets = [manual_city]
-        display_city = manual_city
-    
-    days = st.slider("Trip Duration (Days)", 1, 7, 3)
-    
-    if st.button("Generate Verified Itinerary", use_container_width=True):
-        with st.spinner(f"Querying verified data for {display_city}..."):
+    # Manual Fallback
+    if display_city == "Unknown":
+        st.warning("City not auto-detected.")
+        display_city = st.selectbox("Select City:", ["Delhi", "Mumbai", "Bangalore", "Goa", "Jaipur"])
+        targets = [display_city]
+
+    if st.button("Load Itinerary Data"):
+        with st.spinner(f"Reading Database for {targets}..."):
             
-            # 1. FETCH DATA
-            rag_docs = get_rag_data(current_targets)
+            # CALL THE CACHED FUNCTION
+            docs, logs = fetch_rag_data(targets)
             
-            # 2. DEBUGGER
-            with st.expander(f"📚 Database Inspector ({len(rag_docs)} records found)"):
-                if rag_docs:
-                    st.write(rag_docs[:5]) # Show first 5 records
+            # INSPECT THE DATA
+            with st.expander("🔍 Click to see Verified Database Data", expanded=True):
+                st.write(f"**Status:** Found {len(docs)} attractions.")
+                st.write("Logs:", logs)
+                if docs:
+                    st.json(docs[:5]) # Show first 5 items
                 else:
-                    st.error("❌ No documents found. Check Firebase collection name 'itineraries_knowledge_base'.")
+                    st.error("0 Records found. The query worked, but the collection has no matching city name.")
 
-            # 3. GENERATE AI RESPONSE
-            if rag_docs:
-                context_str = "\n".join(rag_docs)
-                prompt = f"""
-                You are a luxury travel planner.
-                Destination: {display_city}
-                Verified Database Data:
-                {context_str}
-                
-                Task: Create a {days}-day itinerary using ONLY the data above.
-                Requirements:
-                - Use 'Best Time' to order the day.
-                - Mention 'Entry Fee' and 'Significance' for every place.
-                - Do not invent places.
-                """
-                try:
-                    res = client.models.generate_content(model='gemini-2.0-flash-exp', contents=prompt)
-                    st.markdown("### ✨ Your Verified Itinerary")
-                    st.markdown(res.text)
-                except Exception as e:
-                    st.error(f"Gemini API Error: {e}")
-            else:
-                st.warning("The database returned 0 results, so an itinerary could not be generated.")
-
-st.markdown("---")
-st.caption("2025 Departly.ai | RAG-Grounded Intelligence")
+            # GENERATE AI
+            if docs:
+                context = "\n".join(docs)
+                prompt = f"Create a 3-day itinerary for {display_city} using only this data:\n{context}"
+                res = client.models.generate_content(model='gemini-2.0-flash-exp', contents=prompt)
+                st.markdown("### ✨ AI Itinerary")
+                st.markdown(res.text)
