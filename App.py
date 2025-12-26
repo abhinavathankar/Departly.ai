@@ -8,7 +8,6 @@ from datetime import datetime, timedelta
 from dateutil import parser
 
 # --- 1. CONFIGURATION ---
-# Using 'centered' layout for better mobile/vertical flow
 st.set_page_config(page_title="Departly.ai", page_icon="✈️", layout="centered")
 
 # --- 2. HTTP CLIENT ---
@@ -78,9 +77,7 @@ except Exception as e:
     st.error(f"Service Init Error: {e}")
 
 # --- SETTINGS ---
-# Hardcoded to Gemini 3 Flash Preview
 MODEL_ID = 'gemini-3-flash-preview'
-
 INDIAN_AIRLINES = {
     "IndiGo": "6E", "Air India": "AI", "Vistara": "UK", 
     "SpiceJet": "SG", "Air India Express": "IX", "Akasa Air": "QP",
@@ -92,7 +89,7 @@ CITY_VARIANTS = {
     "GOI": ["Goa"], "JAI": ["Jaipur"], "CCU": ["Kolkata"]
 }
 
-# --- 3. HELPER FUNCTIONS ---
+# --- 3. HELPERS ---
 def get_flight_data(iata_code):
     clean_iata = iata_code.replace(" ", "").upper()
     url = f"https://airlabs.co/api/v9/schedules?flight_iata={clean_iata}&api_key={st.secrets['AIRLABS_KEY']}"
@@ -133,26 +130,23 @@ def get_traffic(pickup_address, target_airport_code):
 
 # --- 4. MAIN UI ---
 st.title("✈️ Departly.ai")
-st.caption("Simplified Mobile-First Departure Planner")
 
-# Center inputs
-container = st.container()
-with container:
-    airline_name = st.selectbox("Select Airline", list(INDIAN_AIRLINES.keys()))
-    airline_code = INDIAN_AIRLINES[airline_name]
-    
-    # Split number and pickup on desktop, stack on mobile
-    flight_num = st.text_input("Flight Number", placeholder="e.g. 6433")
-    p_in = st.text_input("Pickup Point", placeholder="e.g. Hoodi, Bangalore")
-    
-    calc_button = st.button("Calculate Journey", type="primary", use_container_width=True)
+airline_name = st.selectbox("Select Airline", list(INDIAN_AIRLINES.keys()))
+airline_code = INDIAN_AIRLINES[airline_name]
+flight_num = st.text_input("Flight Number", placeholder="e.g. 6433")
+p_in = st.text_input("Pickup Point", placeholder="e.g. Hoodi, Bangalore")
+
+# Create a placeholder for the Departure Dashboard
+dashboard_placeholder = st.empty()
 
 if 'flight_info' not in st.session_state:
     st.session_state.flight_info = None
 
+calc_button = st.button("Calculate Journey", type="primary", use_container_width=True)
+
 if calc_button:
     if not (flight_num and p_in):
-        st.warning("Please enter both flight number and pickup point.")
+        st.warning("Please enter both details.")
     else:
         full_flight_code = f"{airline_code}{flight_num}"
         with st.spinner(f"Analyzing {full_flight_code}..."):
@@ -160,36 +154,27 @@ if calc_button:
             if flight:
                 st.session_state.flight_info = flight
                 
-                # DASHBOARD
-                st.markdown("---")
-                st.subheader(f"🎫 Flight {flight.get('flight_iata')}")
-                
-                # Metrics that stack on mobile
-                m1, m2 = st.columns(2)
-                m1.metric("Origin", flight.get('dep_iata'))
-                m2.metric("Destination", flight.get('arr_iata'))
-                
-                m3, m4 = st.columns(2)
-                m3.metric("Departure", parser.parse(flight['dep_time']).strftime('%I:%M %p'))
-                m4.metric("Arrival", parser.parse(flight['arr_time']).strftime('%I:%M %p'))
+                # We put everything inside a "with" block of the placeholder
+                with dashboard_placeholder.container():
+                    st.markdown("---")
+                    st.subheader(f"🎫 Flight {flight.get('flight_iata')}")
+                    
+                    m1, m2 = st.columns(2)
+                    m1.metric("Origin", flight.get('dep_iata'))
+                    m2.metric("Destination", flight.get('arr_iata'))
+                    
+                    m3, m4 = st.columns(2)
+                    m3.metric("Departure", parser.parse(flight['dep_time']).strftime('%I:%M %p'))
+                    m4.metric("Arrival", parser.parse(flight['arr_time']).strftime('%I:%M %p'))
 
-                # TRAFFIC Calculation to ORIGIN
-                traffic = get_traffic(p_in, flight['origin_code'])
-                takeoff_dt = parser.parse(flight['dep_time'])
-                
-                # Math: Traffic + 45m Boarding + 30m Security
-                total_buffer_sec = traffic['sec'] + (45 * 60) + (30 * 60)
-                leave_dt = takeoff_dt - timedelta(seconds=total_buffer_sec)
-                
-                st.success(f"### 🚪 Leave Home by: **{leave_dt.strftime('%I:%M %p')}**")
-                
-                # Final Stats
-                with st.expander("⏱️ Breakdown"):
-                    st.write(f"🚗 Traffic to Airport: {traffic['txt']}")
-                    st.write(f"🛂 Security & Bags: 30 mins")
-                    st.write(f"✈️ Boarding Gate: 45 mins")
+                    traffic = get_traffic(p_in, flight['origin_code'])
+                    takeoff_dt = parser.parse(flight['dep_time'])
+                    total_buffer_sec = traffic['sec'] + (45 * 60) + (30 * 60)
+                    leave_dt = takeoff_dt - timedelta(seconds=total_buffer_sec)
+                    
+                    st.success(f"### 🚪 Leave Home by: **{leave_dt.strftime('%I:%M %p')}**")
             else:
-                st.error("Flight not found. Please re-check the details.")
+                st.error("Flight not found.")
 
 # --- 5. ITINERARY SECTION ---
 if st.session_state.flight_info:
@@ -197,11 +182,14 @@ if st.session_state.flight_info:
     targets = st.session_state.flight_info['targets']
     display = st.session_state.flight_info['display']
     st.subheader(f"🗺️ Plan Your Trip")
-    
     days = st.slider("Trip Duration (Days)", 1, 7, 3)
     
-    # Simple centered button for generation
-    if st.button(f"Generate Itinerary for {display}", use_container_width=True):
+    gen_itinerary = st.button(f"Generate Itinerary for {display}", use_container_width=True)
+
+    if gen_itinerary:
+        # STEP 1: Clear the Departure Dashboard to remove background clutter
+        dashboard_placeholder.empty()
+        
         with st.spinner("Generating with Gemini 3 Flash..."):
             rag_docs = []
             for city in targets:
@@ -211,10 +199,9 @@ if st.session_state.flight_info:
                 context = "\n".join([f"• {d.get('Name')} ({d.get('Type')})" for d in rag_docs])
                 prompt = f"Create a {days}-day itinerary for {display} using only this data:\n{context}"
                 try:
-                    # Model ID is now hardcoded to gemini-3-flash-preview
                     res = client.models.generate_content(model=MODEL_ID, contents=prompt)
                     st.markdown(res.text)
                 except Exception as e:
                     st.error(f"AI Error: {e}")
             else:
-                st.warning("No database records found for this city.")
+                st.warning("No records found.")
