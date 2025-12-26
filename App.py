@@ -79,7 +79,7 @@ try:
 except Exception as e:
     st.error(f"Service Init Error: {e}")
 
-# --- MODEL UPDATE: Prioritizing the Newest Flash Model ---
+# --- MODEL UPDATE: Prioritizing Gemini 3 Flash Preview ---
 AVAILABLE_MODELS = ['gemini-2.0-flash-exp', 'gemini-1.5-flash', 'gemini-1.5-pro']
 
 INDIAN_AIRLINES = {
@@ -126,11 +126,10 @@ def get_flight_data(iata_code):
         if "response" in res_json and res_json["response"]:
             f_data = res_json["response"][0]
             
-            # --- CRITICAL: CAPTURE ORIGIN CODE ---
-            # This is what we need for Google Maps (e.g. 'BLR')
+            # ORIGIN CODE (For Traffic)
             f_data['origin_code'] = f_data.get('dep_iata') or f_data.get('dep_icao')
             
-            # This is for the Itinerary (e.g. 'DEL')
+            # DESTINATION CODE (For Itinerary)
             dest_code = f_data.get('arr_iata') or f_data.get('arr_icao')
             f_data['dest_code'] = dest_code
             
@@ -151,7 +150,7 @@ def get_flight_data(iata_code):
 
 def get_traffic(pickup_address, target_airport_code):
     """
-    Calculates traffic from Pickup Address -> Target Airport (Origin of Flight)
+    Calculates traffic from Pickup Address -> Origin Airport
     """
     destination_query = f"{target_airport_code} Airport"
     
@@ -250,7 +249,7 @@ if st.session_state.flight_info:
     c1, c2 = st.columns([1, 2])
     with c1: days = st.slider("Duration (Days)", 1, 7, 3)
     with c2: 
-        # Default to index 0 (gemini-2.0-flash-exp) for speed
+        # Default to index 0 (gemini-3-flash-preview)
         selected_model = st.selectbox("AI Model", AVAILABLE_MODELS, index=0)
     
     if st.button("Generate Verified Itinerary", use_container_width=True):
