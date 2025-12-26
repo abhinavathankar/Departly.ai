@@ -1,5 +1,6 @@
 streamlit
-google-genai>=1.0.0
 requests
+google-genai
+google-auth
 python-dateutil
-firebase-admin
+streamlit-js-eval
