@@ -71,7 +71,6 @@ class FirestoreREST:
                 results.append(clean_doc)
         return results
 
-# --- CACHING FIX ---
 @st.cache_resource
 def get_db_client():
     return FirestoreREST(st.secrets)
@@ -151,29 +150,32 @@ if 'flight_info' not in st.session_state: st.session_state.flight_info = None
 if 'journey_meta' not in st.session_state: st.session_state.journey_meta = None
 if 'pickup_address' not in st.session_state: st.session_state.pickup_address = ""
 
-airline_name = st.selectbox("Select Airline", list(INDIAN_AIRLINES.keys()))
-airline_code = INDIAN_AIRLINES[airline_name]
-flight_num = st.text_input("Flight Number", placeholder="e.g. 6433")
-
-# --- GPS LOGIC (Invisible) ---
-# This triggers the browser permission prompt automatically.
-# If granted, it updates the address.
+# --- INVISIBLE GPS LOGIC (MOVED UP) ---
+# Moved here so it doesn't create a gap between input boxes
 loc_data = get_geolocation(component_key='gps_trigger')
-
 if loc_data and 'coords' in loc_data:
     lat = loc_data['coords']['latitude']
     lng = loc_data['coords']['longitude']
-    # Only auto-fill if the address box is currently empty to avoid overwriting manual edits
     if not st.session_state.pickup_address:
         st.session_state.pickup_address = reverse_geocode(lat, lng)
 
+# --- INPUTS ---
+# Using columns for tighter layout
+col1, col2 = st.columns([1, 1])
+with col1:
+    airline_name = st.selectbox("Select Airline", list(INDIAN_AIRLINES.keys()))
+with col2:
+    flight_num = st.text_input("Flight Number", placeholder="e.g. 6433")
+
+# Pickup point sits directly below, no gaps
 p_in = st.text_input("Pickup Point", 
                      value=st.session_state.pickup_address, 
                      placeholder="e.g. Hoodi, Bangalore")
 
-# Keep the manual input in sync with session state
 if p_in != st.session_state.pickup_address:
     st.session_state.pickup_address = p_in
+
+airline_code = INDIAN_AIRLINES[airline_name]
 
 # -----------------------------
 
