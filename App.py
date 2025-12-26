@@ -10,14 +10,20 @@ from dateutil import parser
 # --- 1. CONFIGURATION ---
 st.set_page_config(page_title="Departly.ai", page_icon="✈️", layout="centered")
 
-# --- 2. HTTP FIRESTORE CLIENT (The "No-Hang" Connector) ---
-# This class replaces the 'firebase_admin' library entirely.
+# --- 2. HTTP FIRESTORE CLIENT (With JSON Fix) ---
 class FirestoreREST:
     def __init__(self, secrets):
         try:
-            # Load and Fix Key
+            # Load Key
             raw_key = secrets["FIREBASE_KEY"]
-            key_dict = json.loads(raw_key) if isinstance(raw_key, str) else dict(raw_key)
+            
+            # THE FIX: strict=False allows "Invalid Control Characters" (real newlines)
+            if isinstance(raw_key, str):
+                key_dict = json.loads(raw_key, strict=False)
+            else:
+                key_dict = dict(raw_key)
+
+            # Ensure Private Key has correct newlines for Google Auth
             if "private_key" in key_dict:
                 key_dict["private_key"] = key_dict["private_key"].replace("\\n", "\n")
             
@@ -28,21 +34,20 @@ class FirestoreREST:
             self.project_id = key_dict.get("project_id")
             self.base_url = f"https://firestore.googleapis.com/v1/projects/{self.project_id}/databases/(default)/documents"
         except Exception as e:
-            st.error(f"Auth Error: {e}")
+            st.error(f"🔥 Authentication Error: {e}")
             st.stop()
 
     def query_city(self, city_name):
-        """Fetches docs via HTTP using a structured query."""
+        """Fetches docs via HTTP to bypass firewall hanging."""
         # Refresh Token
         auth_req = google.auth.transport.requests.Request()
         self.creds.refresh(auth_req)
         token = self.creds.token
         
-        # Build the Query URL (Structured Query to filter by City)
+        # Firestore Structured Query
         url = f"{self.base_url}:runQuery"
         headers = {"Authorization": f"Bearer {token}"}
         
-        # Firestore REST Query Syntax
         payload = {
             "structuredQuery": {
                 "from": [{"collectionId": "itineraries_knowledge_base"}],
@@ -58,7 +63,6 @@ class FirestoreREST:
         }
         
         try:
-            # 5-second timeout prevents hanging
             resp = requests.post(url, headers=headers, json=payload, timeout=5)
             if resp.status_code == 200:
                 return self._parse_response(resp.json())
@@ -67,24 +71,22 @@ class FirestoreREST:
             return []
 
     def _parse_response(self, json_data):
-        """Converts Firestore weird JSON to normal Python dicts."""
+        """Clean Firestore JSON response."""
         results = []
-        # Firestore returns a list of objects, some might be empty headers
         for item in json_data:
             if "document" in item:
                 raw_fields = item["document"]["fields"]
                 clean_doc = {}
                 for key, val in raw_fields.items():
-                    # Extract the first value (stringValue, integerValue, etc.)
                     clean_doc[key] = list(val.values())[0]
                 results.append(clean_doc)
         return results
 
-# Initialize the REST Client
+# Initialize
 db_http = FirestoreREST(st.secrets)
 client = genai.Client(api_key=st.secrets["GEMINI_KEY"])
 
-# --- 3. DATA & SYNONYMS ---
+# --- 3. DATA & API ---
 CITY_VARIANTS = {
     "DEL": ["Delhi", "New Delhi"],
     "BLR": ["Bengaluru", "Bangalore"],
@@ -93,17 +95,14 @@ CITY_VARIANTS = {
     "HYD": ["Hyderabad"],
     "GOI": ["Goa"],
     "JAI": ["Jaipur"],
-    "COK": ["Kochi"],
     "CCU": ["Kolkata"]
 }
 
 def get_rag_data_http(target_cities):
-    """Loops through cities using the HTTP client."""
     all_docs = []
     for city in target_cities:
         clean_city = city.strip()
         docs = db_http.query_city(clean_city)
-        
         for d in docs:
             if d.get('Name'):
                 entry = (f"• {d.get('Name')} | Type: {d.get('Type')} | "
@@ -121,13 +120,11 @@ def get_flight_data(flight_input):
             f_data = res["response"][0]
             code = f_data.get('arr_iata') or f_data.get('arr_icao')
             f_data['dest_code'] = code
-            
-            # Map Code
             if code in CITY_VARIANTS:
                 f_data['targets'] = CITY_VARIANTS[code]
                 f_data['display'] = CITY_VARIANTS[code][0]
             else:
-                f_data['targets'] = ["Delhi"] # Fallback default
+                f_data['targets'] = ["Delhi"]
                 f_data['display'] = "Unknown"
             return f_data
     except: pass
@@ -146,9 +143,7 @@ def get_traffic(origin, dest_code):
 if 'flight_info' not in st.session_state:
     st.session_state.flight_info = None
 
-st.title("✈️ Departly.ai (REST Mode)")
-st.caption("Using HTTP Bypass for stable connection.")
-
+st.title("✈️ Departly.ai")
 col1, col2 = st.columns(2)
 with col1: f_in = st.text_input("Flight Number", placeholder="e.g. 6E 6433")
 with col2: p_in = st.text_input("Pickup Point", placeholder="e.g. Hoodi, Bangalore")
@@ -159,7 +154,6 @@ if st.button("Calculate Departure", type="primary", use_container_width=True):
         if flight:
             st.session_state.flight_info = flight
             traffic = get_traffic(p_in, flight['dest_code'])
-            
             if traffic:
                 takeoff = parser.parse(flight['dep_time'])
                 leave = (takeoff - timedelta(minutes=45)) - timedelta(seconds=traffic['sec'] + 3600)
@@ -181,11 +175,8 @@ if st.session_state.flight_info:
     
     if st.button("Generate Verified Itinerary", use_container_width=True):
         with st.spinner(f"Fetching data via HTTP for {targets}..."):
-            
-            # CALL THE REST CLIENT
             rag_docs = get_rag_data_http(targets)
             
-            # DEBUGGER
             with st.expander(f"📚 Data Inspector ({len(rag_docs)} records)"):
                 st.write(rag_docs)
 
