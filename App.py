@@ -123,8 +123,14 @@ def get_flight_data(iata_code):
         res_json = res.json()
         if "response" in res_json and res_json["response"]:
             f_data = res_json["response"][0]
+            
+            # ORIGIN CODE (For Traffic)
+            f_data['origin_code'] = f_data.get('dep_iata') or f_data.get('dep_icao')
+            
+            # DESTINATION CODE (For Itinerary)
             code = f_data.get('arr_iata') or f_data.get('arr_icao')
             f_data['dest_code'] = code
+            
             if code in CITY_VARIANTS:
                 f_data['targets'] = CITY_VARIANTS[code]
                 f_data['display'] = CITY_VARIANTS[code][0]
@@ -139,9 +145,18 @@ def get_flight_data(iata_code):
         st.error(f"Connection Error: {e}")
     return None
 
-def get_traffic(origin, dest_code):
+def get_traffic(origin_address, airport_code):
+    """
+    Calculates traffic from User Location -> Origin Airport
+    """
     url = "https://maps.googleapis.com/maps/api/distancematrix/json"
-    params = {"origins": origin, "destinations": f"{dest_code} Airport", "mode": "driving", "departure_time": "now", "key": st.secrets["GOOGLE_MAPS_KEY"]}
+    params = {
+        "origins": origin_address,
+        "destinations": f"{airport_code} Airport", # e.g. "BLR Airport"
+        "mode": "driving", 
+        "departure_time": "now", 
+        "key": st.secrets["GOOGLE_MAPS_KEY"]
+    }
     try:
         data = requests.get(url, params=params, timeout=5).json()
         if "rows" in data and data["rows"]:
@@ -181,6 +196,7 @@ if st.button("Calculate Journey", type="primary", use_container_width=True):
                 # --- DASHBOARD ---
                 st.divider()
                 st.subheader(f"🎫 Ticket: {flight.get('flight_iata')}")
+                
                 t1, t2, t3, t4 = st.columns(4)
                 t1.metric("Airline", airline_name)
                 t2.metric("Date", flight.get('dep_time').split()[0])
@@ -191,8 +207,10 @@ if st.button("Calculate Journey", type="primary", use_container_width=True):
                 with st.expander("🔍 See Raw API Data"):
                     st.json(flight)
 
-                # --- NEW CALCULATION LOGIC ---
-                traffic = get_traffic(p_in, flight['dest_code'])
+                # --- CORRECTED CALCULATION LOGIC ---
+                # 1. Use ORIGIN Airport for Traffic (flight['origin_code'])
+                traffic = get_traffic(p_in, flight['origin_code'])
+                
                 takeoff_dt = parser.parse(flight['dep_time'])
                 
                 # Formula: Traffic + 45m Boarding + 30m Security/Bags
@@ -205,10 +223,11 @@ if st.button("Calculate Journey", type="primary", use_container_width=True):
                 st.success(f"### 🚪 Leave Home by: **{leave_dt.strftime('%I:%M %p')}**")
                 
                 # Breakdown Panel
-                c1, c2, c3 = st.columns(3)
-                c1.metric("Traffic", traffic['txt'])
-                c2.metric("Boarding Gate", "45 mins")
-                c3.metric("Security & Bags", "30 mins")
+                c1, c2, c3, c4 = st.columns(4)
+                c1.metric("Route", f"To {flight['origin_code']}")
+                c2.metric("Traffic", traffic['txt'])
+                c3.metric("Boarding", "45 mins")
+                c4.metric("Security", "30 mins")
 
             else:
                 st.error(f"Flight {full_flight_code} not found.")
@@ -216,6 +235,7 @@ if st.button("Calculate Journey", type="primary", use_container_width=True):
 # --- ITINERARY ---
 if st.session_state.flight_info:
     st.divider()
+    # Itinerary uses DESTINATION targets
     targets = st.session_state.flight_info['targets']
     display = st.session_state.flight_info['display']
     st.subheader(f"🗺️ Plan Your Trip to {display}")
