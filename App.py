@@ -6,7 +6,7 @@ from google.oauth2 import service_account
 from google import genai
 from datetime import datetime, timedelta
 from dateutil import parser
-from streamlit_js_eval import get_geolocation  # GPS Support
+from streamlit_js_eval import get_geolocation
 
 # --- 1. CONFIGURATION ---
 st.set_page_config(page_title="Departly.ai", page_icon="✈️", layout="centered")
@@ -15,14 +15,12 @@ st.set_page_config(page_title="Departly.ai", page_icon="✈️", layout="centere
 class FirestoreREST:
     def __init__(self, secrets):
         try:
-            # Handle both string (JSON) and dict formats for keys
             raw_key = secrets["FIREBASE_KEY"]
             if isinstance(raw_key, str):
                 key_dict = json.loads(raw_key, strict=False)
             else:
                 key_dict = dict(raw_key)
 
-            # Fix newlines in private keys
             if "private_key" in key_dict:
                 key_dict["private_key"] = key_dict["private_key"].replace("\\n", "\n")
             
@@ -73,9 +71,7 @@ class FirestoreREST:
                 results.append(clean_doc)
         return results
 
-# --- FIX: CACHED CONNECTION ---
-# We use @st.cache_resource to initialize the DB only once.
-# We do NOT pass st.secrets as an argument to avoid the UnhashableParamError.
+# --- CACHING FIX ---
 @st.cache_resource
 def get_db_client():
     return FirestoreREST(st.secrets)
@@ -159,26 +155,25 @@ airline_name = st.selectbox("Select Airline", list(INDIAN_AIRLINES.keys()))
 airline_code = INDIAN_AIRLINES[airline_name]
 flight_num = st.text_input("Flight Number", placeholder="e.g. 6433")
 
-# --- GPS LOGIC ---
-st.write("---")
-col_gps, col_input = st.columns([1, 4])
-with col_gps:
-    if st.checkbox("📍 Use GPS"):
-        loc_data = get_geolocation()
-        if loc_data and 'coords' in loc_data:
-            lat = loc_data['coords']['latitude']
-            lng = loc_data['coords']['longitude']
-            address = reverse_geocode(lat, lng)
-            st.session_state.pickup_address = address
-            
-with col_input:
-    p_in = st.text_input("Pickup Point", 
-                         value=st.session_state.pickup_address, 
-                         placeholder="e.g. Hoodi, Bangalore",
-                         key="pickup_input_widget")
-    
-    if p_in != st.session_state.pickup_address:
-        st.session_state.pickup_address = p_in
+# --- GPS LOGIC (Invisible) ---
+# This triggers the browser permission prompt automatically.
+# If granted, it updates the address.
+loc_data = get_geolocation(component_key='gps_trigger')
+
+if loc_data and 'coords' in loc_data:
+    lat = loc_data['coords']['latitude']
+    lng = loc_data['coords']['longitude']
+    # Only auto-fill if the address box is currently empty to avoid overwriting manual edits
+    if not st.session_state.pickup_address:
+        st.session_state.pickup_address = reverse_geocode(lat, lng)
+
+p_in = st.text_input("Pickup Point", 
+                     value=st.session_state.pickup_address, 
+                     placeholder="e.g. Hoodi, Bangalore")
+
+# Keep the manual input in sync with session state
+if p_in != st.session_state.pickup_address:
+    st.session_state.pickup_address = p_in
 
 # -----------------------------
 
