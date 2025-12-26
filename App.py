@@ -78,6 +78,7 @@ class FirestoreREST:
                 raw_fields = item["document"]["fields"]
                 clean_doc = {}
                 for key, val in raw_fields.items():
+                    # Extract the first value (stringValue, integerValue, etc.)
                     clean_doc[key] = list(val.values())[0]
                 results.append(clean_doc)
         return results
