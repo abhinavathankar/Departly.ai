@@ -10,7 +10,7 @@ from dateutil import parser
 # --- 1. CONFIGURATION ---
 st.set_page_config(page_title="Departly.ai", page_icon="✈️", layout="centered")
 
-# --- 2. HTTP CLIENT ---
+# --- 2. ROBUST HTTP CLIENT ---
 class FirestoreREST:
     def __init__(self, secrets):
         try:
@@ -33,6 +33,7 @@ class FirestoreREST:
             st.stop()
 
     def query_city(self, city_name):
+        # Refresh Token
         auth_req = google.auth.transport.requests.Request()
         self.creds.refresh(auth_req)
         token = self.creds.token
@@ -105,28 +106,39 @@ def get_rag_data_http(target_cities):
 def get_flight_data(flight_input):
     clean_iata = flight_input.replace(" ", "").upper()
     url = f"https://airlabs.co/api/v9/schedules?flight_iata={clean_iata}&api_key={st.secrets['AIRLABS_KEY']}"
+    
+    # NO MORE SILENT FAILURES. WE PRINT THE ERROR.
     try:
-        res = requests.get(url, timeout=5).json()
-        if "response" in res and res["response"]:
-            f_data = res["response"][0]
+        res = requests.get(url, timeout=5)
+        res_json = res.json()
+        
+        # DEBUG PRINT TO SCREEN
+        if "error" in res_json:
+            st.error(f"❌ Airlabs API Error: {res_json['error']['message']}")
+            return None
+            
+        if "response" in res_json and res_json["response"]:
+            f_data = res_json["response"][0]
             code = f_data.get('arr_iata') or f_data.get('arr_icao')
             f_data['dest_code'] = code
             
-            # --- FIX: Dynamic Fallback ---
-            # Instead of hardcoding "Delhi", we try to use the actual city name from API
-            # If API doesn't have city name, ONLY THEN we fallback to a default.
+            # Dynamic Fallback
             if code in CITY_VARIANTS:
                 f_data['targets'] = CITY_VARIANTS[code]
                 f_data['display'] = CITY_VARIANTS[code][0]
             else:
-                # Use the API's reported city name if available
                 city_from_api = f_data.get('arr_city', 'Unknown City')
                 f_data['targets'] = [city_from_api]
                 f_data['display'] = city_from_api
             
             return f_data
-    except: pass
-    return None
+        else:
+            st.warning(f"⚠️ API returned success but 0 flights found for {clean_iata}. Response: {res_json}")
+            return None
+            
+    except Exception as e:
+        st.error(f"❌ Connection Failed: {e}")
+        return None
 
 def get_traffic(origin, dest_code):
     url = "https://maps.googleapis.com/maps/api/distancematrix/json"
@@ -150,43 +162,41 @@ with col1: f_in = st.text_input("Flight Number", placeholder="e.g. 6E 6433")
 with col2: p_in = st.text_input("Pickup Point", placeholder="e.g. Hoodi, Bangalore")
 
 if st.button("Calculate Departure", type="primary", use_container_width=True):
-    with st.spinner("Fetching Data..."):
-        flight = get_flight_data(f_in)
+    # REMOVED SPINNER TO SEE ERRORS IMMEDIATELY
+    st.write("🔄 Connecting to Flight API...")
+    flight = get_flight_data(f_in)
+    
+    if flight:
+        st.session_state.flight_info = flight
         
-        if flight:
-            st.session_state.flight_info = flight
-            
-            # --- 🛑 FORCE DISPLAY: API DATA DASHBOARD ---
-            st.markdown("### 🎫 Flight Ticket Details")
-            
-            # Create a visual ticket layout
-            t1, t2, t3, t4 = st.columns(4)
-            t1.metric("Flight", flight.get('flight_iata'))
-            t2.metric("Date", flight.get('dep_time').split()[0] if 'dep_time' in flight else "N/A")
-            t3.metric("Origin", f"{flight.get('dep_city')} ({flight.get('dep_iata')})")
-            t4.metric("Dest", f"{flight.get('arr_city')} ({flight.get('arr_iata')})")
-            
-            # Time Row
-            d1, d2 = st.columns(2)
-            d1.info(f"🛫 **Departure:** {flight.get('dep_time')}")
-            d2.info(f"🛬 **Arrival:** {flight.get('arr_time')}")
-            
-            # JSON Dump (No Expander - Always Visible)
-            st.text("⬇️ RAW API RESPONSE (For Debugging) ⬇️")
-            st.json(flight)
-            # --------------------------------------------
+        # --- THE BLUE BOXES ---
+        st.divider()
+        st.markdown("### 🎫 Flight Ticket Details")
+        
+        t1, t2, t3, t4 = st.columns(4)
+        t1.metric("Flight", flight.get('flight_iata', 'N/A'))
+        t2.metric("Date", flight.get('dep_time', 'N/A').split()[0])
+        t3.metric("Origin", f"{flight.get('dep_city')} ({flight.get('dep_iata')})")
+        t4.metric("Dest", f"{flight.get('arr_city')} ({flight.get('arr_iata')})")
+        
+        d1, d2 = st.columns(2)
+        d1.info(f"🛫 **Departure:** {flight.get('dep_time')}")
+        d2.info(f"🛬 **Arrival:** {flight.get('arr_time')}")
+        
+        st.write("**Debug JSON:**")
+        st.json(flight)
+        # ----------------------
 
-            traffic = get_traffic(p_in, flight['dest_code'])
-            
-            # Logic
-            takeoff_dt = parser.parse(flight['dep_time'])
-            total_buffer_sec = traffic['sec'] + (45 * 60) + (60 * 60)
-            leave_dt = takeoff_dt - timedelta(seconds=total_buffer_sec)
-            
-            st.success(f"### 🚪 Leave Home by: **{leave_dt.strftime('%I:%M %p')}**")
+        traffic = get_traffic(p_in, flight['dest_code'])
+        
+        takeoff_dt = parser.parse(flight['dep_time'])
+        total_buffer_sec = traffic['sec'] + (45 * 60) + (60 * 60)
+        leave_dt = takeoff_dt - timedelta(seconds=total_buffer_sec)
+        
+        st.success(f"### 🚪 Leave Home by: **{leave_dt.strftime('%I:%M %p')}**")
 
-        else:
-            st.error("Flight not found.")
+    else:
+        st.error("🛑 Calculation Stopped: Flight Data could not be retrieved.")
 
 # --- 5. ITINERARY SECTION ---
 if st.session_state.flight_info:
