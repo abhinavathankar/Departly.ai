@@ -6,40 +6,31 @@ from google.oauth2 import service_account
 from google import genai
 from datetime import datetime, timedelta
 from dateutil import parser
-from streamlit_js_eval import get_geolocation
 
 # --- 1. CONFIGURATION ---
 st.set_page_config(page_title="Departly.ai", page_icon="✈️", layout="centered")
 
-# --- 2. OPTIMIZED SERVICES (Cached) ---
-@st.cache_resource
-def get_firestore_client(firebase_key_json):
-    # We pass ONLY the JSON string or dict, not the whole st.secrets object
-    try:
-        if isinstance(firebase_key_json, str):
-            key_dict = json.loads(firebase_key_json, strict=False)
-        else:
-            key_dict = dict(firebase_key_json)
-
-        if "private_key" in key_dict:
-            key_dict["private_key"] = key_dict["private_key"].replace("\\n", "\n")
-        
-        creds = service_account.Credentials.from_service_account_info(
-            key_dict, scopes=["https://www.googleapis.com/auth/cloud-platform"]
-        )
-        return creds, key_dict.get("project_id")
-    except Exception as e:
-        return None, None
-
+# --- 2. HTTP CLIENT ---
 class FirestoreREST:
     def __init__(self, secrets):
-        # FIX: We pass only the specific key section, which is hashable
-        self.creds, self.project_id = get_firestore_client(dict(secrets["FIREBASE_KEY"]))
-        
-        if not self.creds:
-            st.error("🔥 Auth Failed")
+        try:
+            raw_key = secrets["FIREBASE_KEY"]
+            if isinstance(raw_key, str):
+                key_dict = json.loads(raw_key, strict=False)
+            else:
+                key_dict = dict(raw_key)
+
+            if "private_key" in key_dict:
+                key_dict["private_key"] = key_dict["private_key"].replace("\\n", "\n")
+            
+            self.creds = service_account.Credentials.from_service_account_info(
+                key_dict, scopes=["https://www.googleapis.com/auth/cloud-platform"]
+            )
+            self.project_id = key_dict.get("project_id")
+            self.base_url = f"https://firestore.googleapis.com/v1/projects/{self.project_id}/databases/(default)/documents"
+        except Exception as e:
+            st.error(f"🔥 Auth Error: {e}")
             st.stop()
-        self.base_url = f"https://firestore.googleapis.com/v1/projects/{self.project_id}/databases/(default)/documents"
 
     def query_city(self, city_name):
         auth_req = google.auth.transport.requests.Request()
@@ -79,10 +70,11 @@ class FirestoreREST:
                 results.append(clean_doc)
         return results
 
-# Initialize Services
-# We convert the secrets section to a standard dict to ensure it is hashable
-db_http = FirestoreREST(st.secrets)
-client = genai.Client(api_key=st.secrets["GEMINI_KEY"])
+try:
+    db_http = FirestoreREST(st.secrets)
+    client = genai.Client(api_key=st.secrets["GEMINI_KEY"])
+except Exception as e:
+    st.error(f"Service Init Error: {e}")
 
 # --- SETTINGS ---
 MODEL_ID = 'gemini-3-flash-preview'
@@ -97,8 +89,7 @@ CITY_VARIANTS = {
     "GOI": ["Goa"], "JAI": ["Jaipur"], "CCU": ["Kolkata"]
 }
 
-# --- 3. HELPER FUNCTIONS (Cached) ---
-@st.cache_data(ttl=300) 
+# --- 3. HELPERS ---
 def get_flight_data(iata_code):
     clean_iata = iata_code.replace(" ", "").upper()
     url = f"https://airlabs.co/api/v9/schedules?flight_iata={clean_iata}&api_key={st.secrets['AIRLABS_KEY']}"
@@ -121,17 +112,6 @@ def get_flight_data(iata_code):
     except: pass
     return None
 
-@st.cache_data(ttl=600) 
-def reverse_geocode(lat, lng):
-    url = "https://maps.googleapis.com/maps/api/geocode/json"
-    params = {"latlng": f"{lat},{lng}", "key": st.secrets["GOOGLE_MAPS_KEY"]}
-    try:
-        res = requests.get(url, params=params).json()
-        if res.get('status') == 'OK':
-            return res['results'][0]['formatted_address']
-    except: pass
-    return None
-
 def get_traffic(pickup_address, target_airport_code):
     destination_query = f"{target_airport_code} Airport"
     url = "https://maps.googleapis.com/maps/api/distancematrix/json"
@@ -151,87 +131,63 @@ def get_traffic(pickup_address, target_airport_code):
 # --- 4. MAIN UI ---
 st.title("✈️ Departly.ai")
 
+# PERSISTENT DATA
 if 'flight_info' not in st.session_state: st.session_state.flight_info = None
 if 'journey_meta' not in st.session_state: st.session_state.journey_meta = None
-if 'pickup_loc' not in st.session_state: st.session_state.pickup_loc = ""
 
-# --- INPUT CONTAINER ---
-with st.container():
-    # Row 1: Flight Details
-    c1, c2 = st.columns([1, 1])
-    with c1:
-        airline_name = st.selectbox("Airline", list(INDIAN_AIRLINES.keys()))
-        airline_code = INDIAN_AIRLINES[airline_name]
-    with c2:
-        flight_num = st.text_input("Flight Number", placeholder="e.g. 6433")
+airline_name = st.selectbox("Select Airline", list(INDIAN_AIRLINES.keys()))
+airline_code = INDIAN_AIRLINES[airline_name]
+flight_num = st.text_input("Flight Number", placeholder="e.g. 6433")
+p_in = st.text_input("Pickup Point", placeholder="e.g. Hoodi, Bangalore")
 
-    # Row 2: Pickup & GPS (Aligned)
-    c3, c4 = st.columns([3, 1]) 
-    with c3:
-        p_in = st.text_input("Pickup Point", value=st.session_state.pickup_loc, placeholder="Address or use GPS ->")
-    with c4:
-        st.write("") 
-        st.write("") 
-        loc_data = get_geolocation(component_key='get_loc', label="📍 Detect")
+if st.button("Calculate Journey", type="primary", use_container_width=True):
+    if not (flight_num and p_in):
+        st.warning("Please enter both details.")
+    else:
+        full_flight_code = f"{airline_code}{flight_num}"
+        with st.spinner(f"Analyzing {full_flight_code}..."):
+            flight = get_flight_data(full_flight_code)
+            if flight:
+                traffic = get_traffic(p_in, flight['origin_code'])
+                takeoff_dt = parser.parse(flight['dep_time'])
+                total_buffer_sec = traffic['sec'] + (45 * 60) + (30 * 60)
+                leave_dt = takeoff_dt - timedelta(seconds=total_buffer_sec)
+                
+                # Store everything in session state so it survives the next button click
+                st.session_state.flight_info = flight
+                st.session_state.journey_meta = {
+                    "leave_time": leave_dt.strftime('%I:%M %p'),
+                    "traffic_txt": traffic['txt'],
+                    "dep_iata": flight.get('dep_iata'),
+                    "arr_iata": flight.get('arr_iata'),
+                    "takeoff": parser.parse(flight['dep_time']).strftime('%I:%M %p'),
+                    "landing": parser.parse(flight['arr_time']).strftime('%I:%M %p')
+                }
+            else:
+                st.error("Flight not found.")
 
-    # GPS Logic Handler
-    if loc_data:
-        lat = loc_data.get('coords', {}).get('latitude')
-        lng = loc_data.get('coords', {}).get('longitude')
-        if lat and lng:
-            new_address = reverse_geocode(lat, lng)
-            if new_address and new_address != st.session_state.pickup_loc:
-                st.session_state.pickup_loc = new_address
-                st.rerun()
-
-    # Calculate Button
-    if st.button("Calculate Journey", type="primary", use_container_width=True):
-        if not (flight_num and p_in):
-            st.warning("Please enter both details.")
-        else:
-            full_flight_code = f"{airline_code}{flight_num}"
-            with st.spinner("Calculating timeline..."):
-                flight = get_flight_data(full_flight_code)
-                if flight:
-                    traffic = get_traffic(p_in, flight['origin_code'])
-                    takeoff_dt = parser.parse(flight['dep_time'])
-                    total_buffer_sec = traffic['sec'] + (45 * 60) + (30 * 60)
-                    leave_dt = takeoff_dt - timedelta(seconds=total_buffer_sec)
-                    
-                    st.session_state.flight_info = flight
-                    st.session_state.journey_meta = {
-                        "leave_time": leave_dt.strftime('%I:%M %p'),
-                        "traffic_txt": traffic['txt'],
-                        "dep_iata": flight.get('dep_iata'),
-                        "arr_iata": flight.get('arr_iata'),
-                        "takeoff": parser.parse(flight['dep_time']).strftime('%I:%M %p'),
-                        "landing": parser.parse(flight['arr_time']).strftime('%I:%M %p')
-                    }
-                else:
-                    st.error("Flight not found.")
-
-# --- DISPLAY JOURNEY ---
+# --- DISPLAY JOURNEY (This now stays visible) ---
 if st.session_state.journey_meta:
     j = st.session_state.journey_meta
     st.markdown("---")
     st.subheader(f"🎫 Flight Dashboard")
     
-    c_a, c_b = st.columns(2)
-    c_a.metric("Origin", j["dep_iata"])
-    c_b.metric("Dest", j["arr_iata"])
+    c1, c2 = st.columns(2)
+    c1.metric("From", j["dep_iata"])
+    c2.metric("To", j["arr_iata"])
     
-    c_c, c_d = st.columns(2)
-    c_c.metric("Departure", j["takeoff"])
-    c_d.metric("Arrival", j["landing"])
+    c3, c4 = st.columns(2)
+    c3.metric("Takeoff", j["takeoff"])
+    c4.metric("Landing", j["landing"])
 
     st.success(f"### 🚪 Leave Home by: **{j['leave_time']}**")
     
     with st.expander("⏱️ Journey Breakdown", expanded=True):
         st.write(f"🚗 **Travel to Airport:** {j['traffic_txt']}")
-        st.write(f"🛂 **Security Check:** 30 mins")
-        st.write(f"✈️ **Boarding Gate:** 45 mins")
+        st.write(f"🛂 **Security & Baggage Drop:** 30 mins")
+        st.write(f"✈️ **Boarding Gate Close:** 45 mins")
 
-# --- ITINERARY SECTION ---
+# --- 5. ITINERARY SECTION ---
 if st.session_state.flight_info:
     st.markdown("---")
     targets = st.session_state.flight_info['targets']
@@ -240,7 +196,8 @@ if st.session_state.flight_info:
     days = st.slider("Trip Duration (Days)", 1, 7, 3)
     
     if st.button(f"Generate Itinerary (Gemini 3 Flash)", use_container_width=True):
-        with st.spinner("Generating itinerary..."):
+        # We NO LONGER clear the placeholder, so the breakdown stays visible.
+        with st.spinner("Creating your custom itinerary..."):
             rag_docs = []
             for city in targets:
                 rag_docs.extend(db_http.query_city(city.strip()))
