@@ -8,9 +8,10 @@ from google.genai import types
 from datetime import datetime, timedelta
 from dateutil import parser
 
-# --- 1. FIREBASE INITIALIZATION ---
+# --- 1. FIREBASE & AI INITIALIZATION ---
 if not firebase_admin._apps:
     try:
+        # Pulls from st.secrets["FIREBASE_KEY"]
         key_dict = json.loads(st.secrets["FIREBASE_KEY"])
         cred = credentials.Certificate(key_dict)
         firebase_admin.initialize_app(cred)
@@ -21,49 +22,80 @@ if not firebase_admin._apps:
 db = firestore.client()
 client = genai.Client(api_key=st.secrets["GEMINI_KEY"])
 
-# --- 2. THE RAG ENGINE ---
+# --- 2. CITY MAPPING FALLBACK ---
+# Sometimes APIs return 'DEL' instead of 'Delhi'. This maps common codes to your CSV City names.
+IATA_CITY_MAP = {
+    "DEL": "Delhi",
+    "BLR": "Bengaluru",
+    "BOM": "Mumbai",
+    "MAA": "Chennai",
+    "HYD": "Hyderabad",
+    "CCU": "Kolkata",
+    "GOI": "Goa",
+    "PNQ": "Pune",
+    "AMD": "Ahmedabad",
+    "JAI": "Jaipur",
+    "LKO": "Lucknow",
+    "COK": "Kochi",
+    "VNS": "Varanasi"
+}
+
+# --- 3. RAG ENGINE ---
 def get_itinerary_context(city_name):
-    """Fetches data and provides debug info to the UI"""
-    # Force Title Case (e.g., 'delhi' -> 'Delhi')
+    """Fetches data from Firestore collection 'itineraries_knowledge_base'"""
+    if not city_name or city_name == "Unknown":
+        return []
+        
     search_term = city_name.strip().title()
+    # Handle "New Delhi" vs "Delhi" mapping if necessary
+    if search_term == "New Delhi": search_term = "Delhi"
     
     try:
-        # Note: 'City' must match your Firestore field name exactly
+        # EXACT Match query on the 'City' field
         docs = db.collection("itineraries_knowledge_base").where("City", "==", search_term).get(timeout=10)
         
         context_data = []
         for doc in docs:
             d = doc.to_dict()
-            # Mapping CSV columns to readable text
-            info = f"- {d.get('Name')}: {d.get('Significance')}. Fee: {d.get('Entrance Fee in INR')} INR. Visit: {d.get('time needed to visit in hrs')} hrs."
+            info = f"- {d.get('Name')}: {d.get('Significance')}. Fee: {d.get('Entrance Fee in INR')} INR. Time: {d.get('time needed to visit in hrs')} hrs."
             context_data.append(info)
-        
-        return context_data # Returns a LIST
+        return context_data
     except Exception as e:
-        st.error(f"Database Query Failed: {e}")
+        st.error(f"Database Query Error: {e}")
         return []
 
-# --- 3. API WRAPPERS ---
+# --- 4. FLIGHT & TRAFFIC LOGIC ---
 def get_flight_data(flight_input):
     clean_iata = flight_input.replace(" ", "").upper()
     url = f"https://airlabs.co/api/v9/schedules?flight_iata={clean_iata}&api_key={st.secrets['AIRLABS_KEY']}"
     try:
         res = requests.get(url).json()
-        return res["response"][0] if "response" in res and res["response"] else None
+        if "response" in res and res["response"]:
+            f_data = res["response"][0]
+            # IMPROVED CITY DETECTION
+            city = f_data.get('arr_city')
+            iata = f_data.get('arr_iata')
+            
+            # If city is missing, use the IATA map, otherwise use IATA itself
+            final_city = city if city else IATA_CITY_MAP.get(iata, iata)
+            f_data['detected_city'] = final_city
+            return f_data
     except: return None
+    return None
 
 def get_travel_metrics(origin, airport_code):
     url = "https://maps.googleapis.com/maps/api/distancematrix/json"
     params = {"origins": origin, "destinations": f"{airport_code} Airport", "mode": "driving", "departure_time": "now", "key": st.secrets["GOOGLE_MAPS_KEY"]}
     try:
         data = requests.get(url, params=params).json()
-        return {"seconds": data['rows'][0]['elements'][0]['duration_in_traffic']['value'], "text": data['rows'][0]['elements'][0]['duration_in_traffic']['text']}
+        if data['status'] == 'OK':
+            element = data['rows'][0]['elements'][0]
+            return {"seconds": element['duration_in_traffic']['value'], "text": element['duration_in_traffic']['text']}
     except: return None
 
-# --- 4. MAIN UI ---
+# --- 5. UI ---
 st.set_page_config(page_title="Departly.ai", page_icon="✈️")
 
-# Persistent state
 if 'dest_city' not in st.session_state:
     st.session_state.dest_city = None
 
@@ -76,42 +108,57 @@ with col2:
     home_input = st.text_input("Pickup Point", placeholder="e.g. Hoodi, Bangalore")
 
 if st.button("Calculate My Safe Departure", use_container_width=True):
-    with st.spinner("Calculating..."):
+    with st.spinner("Analyzing Journey..."):
         flight = get_flight_data(flight_input)
         if flight:
-            st.session_state.dest_city = flight.get('arr_city', 'Unknown')
-            # (Time calculations simplified for brevity)
-            st.success(f"Heading to: {st.session_state.dest_city}")
+            # Using our improved detection logic
+            st.session_state.dest_city = flight.get('detected_city', 'Unknown')
+            
+            takeoff_dt = parser.parse(flight['dep_time'])
+            boarding_dt = takeoff_dt - timedelta(minutes=45)
+            traffic = get_travel_metrics(home_input, flight['dep_iata'])
+            
+            if traffic:
+                leave_dt = boarding_dt - timedelta(seconds=traffic['seconds'] + (105 * 60))
+                st.balloons()
+                st.success(f"### 🚪 Leave Home by: **{leave_dt.strftime('%I:%M %p')}**")
+                st.write(f"Confirmed: Heading to **{st.session_state.dest_city}**")
+            else:
+                st.error("Traffic calculation failed.")
         else:
-            st.error("Flight not found.")
+            st.error("Flight not found. Try a different number.")
 
-# --- 5. RAG SECTION ---
+# --- 6. RAG ITINERARY GENERATOR ---
 if st.session_state.dest_city and st.session_state.dest_city != 'Unknown':
     st.divider()
-    st.subheader(f"🗺️ Plan Your {st.session_state.dest_city} Trip")
+    st.subheader(f"🗺️ {st.session_state.dest_city} Travel Plan")
     
-    days = st.slider("Days?", 1, 7, 3)
+    days = st.slider("Trip Duration (Days)", 1, 7, 3)
     
-    if st.button("Generate Itinerary"):
-        with st.spinner("Fetching Data from Firebase..."):
-            # Step 1: Retrieval
+    if st.button("Generate RAG Itinerary", use_container_width=True):
+        with st.spinner("Accessing Firebase Knowledge Base..."):
             results = get_itinerary_context(st.session_state.dest_city)
             
-            # DEBUG LABEL (Remove after testing)
-            st.write(f"🔍 Database Check: Found {len(results)} places for {st.session_state.dest_city}")
+            # DEBUG INFO
+            st.caption(f"Found {len(results)} local attractions in database for {st.session_state.dest_city}.")
 
             if len(results) > 0:
-                # Step 2: Generation
                 context_str = "\n".join(results)
-                prompt = f"Using this data: {context_str}, create a {days}-day itinerary for {st.session_state.dest_city}."
+                prompt = f"""
+                Grounded Itinerary Task:
+                Based ONLY on this database data:
+                {context_str}
                 
+                Create a logical {days}-day itinerary for {st.session_state.dest_city}. 
+                Mention entrance fees and why these places are significant.
+                """
                 try:
                     response = client.models.generate_content(model='gemini-3-flash-preview', contents=prompt)
                     st.info(response.text)
                 except Exception as e:
                     st.error(f"AI Error: {e}")
             else:
-                st.warning(f"No records for '{st.session_state.dest_city}' in your database. Ensure the City name in Firebase starts with a Capital letter.")
+                st.warning(f"City '{st.session_state.dest_city}' recognized, but no specific matches in your CSV/Firebase. Try 'Delhi' or 'Bengaluru'.")
 
 st.markdown("---")
 st.caption("Powered by Firebase RAG & Gemini 3")
