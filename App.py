@@ -128,7 +128,7 @@ def get_traffic(pickup_address, target_airport_code):
     except: pass
     return {"sec": 5400, "txt": "1h 30m (Est)"}
 
-# --- 4. MAIN UI ---
+# --- 4. MAIN UI (CENTERED) ---
 st.title("✈️ Departly.ai")
 
 airline_name = st.selectbox("Select Airline", list(INDIAN_AIRLINES.keys()))
@@ -136,15 +136,13 @@ airline_code = INDIAN_AIRLINES[airline_name]
 flight_num = st.text_input("Flight Number", placeholder="e.g. 6433")
 p_in = st.text_input("Pickup Point", placeholder="e.g. Hoodi, Bangalore")
 
-# Create a placeholder for the Departure Dashboard
+# DASHBOARD PLACEHOLDER (Ensures background isn't messy)
 dashboard_placeholder = st.empty()
 
 if 'flight_info' not in st.session_state:
     st.session_state.flight_info = None
 
-calc_button = st.button("Calculate Journey", type="primary", use_container_width=True)
-
-if calc_button:
+if st.button("Calculate Journey", type="primary", use_container_width=True):
     if not (flight_num and p_in):
         st.warning("Please enter both details.")
     else:
@@ -154,25 +152,33 @@ if calc_button:
             if flight:
                 st.session_state.flight_info = flight
                 
-                # We put everything inside a "with" block of the placeholder
                 with dashboard_placeholder.container():
                     st.markdown("---")
                     st.subheader(f"🎫 Flight {flight.get('flight_iata')}")
                     
-                    m1, m2 = st.columns(2)
-                    m1.metric("Origin", flight.get('dep_iata'))
-                    m2.metric("Destination", flight.get('arr_iata'))
+                    # Information Grid
+                    c1, c2 = st.columns(2)
+                    c1.metric("From", flight.get('dep_iata'))
+                    c2.metric("To", flight.get('arr_iata'))
                     
-                    m3, m4 = st.columns(2)
-                    m3.metric("Departure", parser.parse(flight['dep_time']).strftime('%I:%M %p'))
-                    m4.metric("Arrival", parser.parse(flight['arr_time']).strftime('%I:%M %p'))
+                    c3, c4 = st.columns(2)
+                    c3.metric("Takeoff", parser.parse(flight['dep_time']).strftime('%I:%M %p'))
+                    c4.metric("Landing", parser.parse(flight['arr_time']).strftime('%I:%M %p'))
 
                     traffic = get_traffic(p_in, flight['origin_code'])
                     takeoff_dt = parser.parse(flight['dep_time'])
+                    
+                    # Logic: Traffic + 45m Boarding + 30m Security
                     total_buffer_sec = traffic['sec'] + (45 * 60) + (30 * 60)
                     leave_dt = takeoff_dt - timedelta(seconds=total_buffer_sec)
                     
                     st.success(f"### 🚪 Leave Home by: **{leave_dt.strftime('%I:%M %p')}**")
+                    
+                    # RESTORED: JOURNEY BREAKDOWN DROPDOWN
+                    with st.expander("⏱️ Journey Breakdown", expanded=True):
+                        st.write(f"🚗 **Travel to Airport:** {traffic['txt']}")
+                        st.write(f"🛂 **Security & Baggage Drop:** 30 mins")
+                        st.write(f"✈️ **Boarding Gate Close:** 45 mins")
             else:
                 st.error("Flight not found.")
 
@@ -181,16 +187,14 @@ if st.session_state.flight_info:
     st.markdown("---")
     targets = st.session_state.flight_info['targets']
     display = st.session_state.flight_info['display']
-    st.subheader(f"🗺️ Plan Your Trip")
+    st.subheader(f"🗺️ Plan Trip: {display}")
     days = st.slider("Trip Duration (Days)", 1, 7, 3)
     
-    gen_itinerary = st.button(f"Generate Itinerary for {display}", use_container_width=True)
-
-    if gen_itinerary:
-        # STEP 1: Clear the Departure Dashboard to remove background clutter
+    if st.button(f"Generate Itinerary (Gemini 3 Flash)", use_container_width=True):
+        # We clear the dashboard placeholder to prevent background "bleed"
         dashboard_placeholder.empty()
         
-        with st.spinner("Generating with Gemini 3 Flash..."):
+        with st.spinner("Creating your custom itinerary..."):
             rag_docs = []
             for city in targets:
                 rag_docs.extend(db_http.query_city(city.strip()))
@@ -204,4 +208,4 @@ if st.session_state.flight_info:
                 except Exception as e:
                     st.error(f"AI Error: {e}")
             else:
-                st.warning("No records found.")
+                st.warning("No database records found for this city.")
