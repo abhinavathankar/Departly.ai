@@ -10,20 +10,23 @@ from dateutil import parser
 # --- 1. CONFIGURATION ---
 st.set_page_config(page_title="Departly.ai", page_icon="✈️", layout="centered")
 
-# --- 2. HTTP FIRESTORE CLIENT ---
+# Define your model hierarchy here
+AVAILABLE_MODELS = ['gemini-2.0-flash-exp', 'gemini-1.5-flash', 'gemini-1.5-pro']
+
+# --- 2. HTTP FIRESTORE CLIENT (Firewall Bypass) ---
 class FirestoreREST:
     def __init__(self, secrets):
         try:
             # 1. Load Key
             raw_key = secrets["FIREBASE_KEY"]
             
-            # Use standard JSON loading
+            # Use standard JSON loading with strict=False
             if isinstance(raw_key, str):
                 key_dict = json.loads(raw_key, strict=False)
             else:
                 key_dict = dict(raw_key)
 
-            # 2. Fix Newlines (Standard safety check)
+            # 2. Fix Newlines
             if "private_key" in key_dict:
                 key_dict["private_key"] = key_dict["private_key"].replace("\\n", "\n")
             
@@ -39,12 +42,10 @@ class FirestoreREST:
 
     def query_city(self, city_name):
         """Fetches docs via HTTP to bypass firewall hanging."""
-        # Refresh Token
         auth_req = google.auth.transport.requests.Request()
         self.creds.refresh(auth_req)
         token = self.creds.token
         
-        # Firestore Structured Query
         url = f"{self.base_url}:runQuery"
         headers = {"Authorization": f"Bearer {token}"}
         
@@ -78,7 +79,6 @@ class FirestoreREST:
                 raw_fields = item["document"]["fields"]
                 clean_doc = {}
                 for key, val in raw_fields.items():
-                    # Extract the first value (stringValue, integerValue, etc.)
                     clean_doc[key] = list(val.values())[0]
                 results.append(clean_doc)
         return results
@@ -172,7 +172,15 @@ if st.session_state.flight_info:
     display = st.session_state.flight_info['display']
     
     st.subheader(f"🗺️ Guide for {display}")
-    days = st.slider("Days", 1, 7, 3)
+    
+    # --- MODEL SELECTOR ---
+    c1, c2 = st.columns([1, 2])
+    with c1:
+        days = st.slider("Trip Duration (Days)", 1, 7, 3)
+    with c2:
+        # Selector for the model
+        selected_model = st.selectbox("AI Model", AVAILABLE_MODELS, index=1)
+        # Default index=1 (gemini-1.5-flash) is safer as 2.0 is experimental
     
     if st.button("Generate Verified Itinerary", use_container_width=True):
         with st.spinner(f"Fetching data via HTTP for {targets}..."):
@@ -184,7 +192,18 @@ if st.session_state.flight_info:
             if rag_docs:
                 context = "\n".join(rag_docs)
                 prompt = f"Create a {days}-day itinerary for {display} using this data:\n{context}"
-                res = client.models.generate_content(model='gemini-2.0-flash-exp', contents=prompt)
-                st.markdown(res.text)
+                
+                try:
+                    # Uses the selected model from the dropdown
+                    res = client.models.generate_content(
+                        model=selected_model, 
+                        contents=prompt
+                    )
+                    st.markdown("### ✨ Your Verified Itinerary")
+                    st.markdown(res.text)
+                    
+                except Exception as e:
+                    st.error(f"🤖 AI Error with {selected_model}: {e}")
+                    st.caption("Try selecting a stable model like 'gemini-1.5-flash'")
             else:
                 st.warning("No records found via HTTP. Check City Name in CSV.")
