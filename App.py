@@ -82,7 +82,9 @@ except Exception as e:
     st.error(f"Service Init Error: {e}")
 
 # --- SETTINGS ---
-MODEL_ID = 'gemini-2.0-flash-exp'
+# UPDATED: Using the latest Gemini 3 Flash model (released Dec 2025)
+MODEL_ID = 'gemini-3-flash-preview' 
+
 INDIAN_AIRLINES = {
     "IndiGo": "6E", "Air India": "AI", "Vistara": "UK", 
     "SpiceJet": "SG", "Air India Express": "IX", "Akasa Air": "QP",
@@ -150,8 +152,7 @@ if 'flight_info' not in st.session_state: st.session_state.flight_info = None
 if 'journey_meta' not in st.session_state: st.session_state.journey_meta = None
 if 'pickup_address' not in st.session_state: st.session_state.pickup_address = ""
 
-# --- INVISIBLE GPS LOGIC (MOVED UP) ---
-# Moved here so it doesn't create a gap between input boxes
+# --- INVISIBLE GPS LOGIC ---
 loc_data = get_geolocation(component_key='gps_trigger')
 if loc_data and 'coords' in loc_data:
     lat = loc_data['coords']['latitude']
@@ -160,14 +161,12 @@ if loc_data and 'coords' in loc_data:
         st.session_state.pickup_address = reverse_geocode(lat, lng)
 
 # --- INPUTS ---
-# Using columns for tighter layout
 col1, col2 = st.columns([1, 1])
 with col1:
     airline_name = st.selectbox("Select Airline", list(INDIAN_AIRLINES.keys()))
 with col2:
     flight_num = st.text_input("Flight Number", placeholder="e.g. 6433")
 
-# Pickup point sits directly below, no gaps
 p_in = st.text_input("Pickup Point", 
                      value=st.session_state.pickup_address, 
                      placeholder="e.g. Hoodi, Bangalore")
@@ -233,7 +232,7 @@ if st.session_state.flight_info:
     st.subheader(f"🗺️ Plan Trip: {display}")
     days = st.slider("Trip Duration (Days)", 1, 7, 3)
     
-    if st.button(f"Generate Itinerary (Gemini)", use_container_width=True):
+    if st.button(f"Generate Itinerary (Gemini 3)", use_container_width=True):
         with st.spinner("Creating your custom itinerary..."):
             rag_docs = []
             for city in targets:
@@ -243,6 +242,7 @@ if st.session_state.flight_info:
                 context = "\n".join([f"• {d.get('Name')} ({d.get('Type')})" for d in rag_docs])
                 prompt = f"Create a {days}-day itinerary for {display} using only this data:\n{context}"
                 try:
+                    # Using the client initialized with Gemini 3 Flash
                     res = client.models.generate_content(model=MODEL_ID, contents=prompt)
                     st.markdown("### ✨ Your Verified Itinerary")
                     st.markdown(res.text)
