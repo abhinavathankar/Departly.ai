@@ -4,7 +4,7 @@ import json
 import time
 import google.auth.transport.requests
 from google.oauth2 import service_account
-import google.generativeai as genai  # Standard Library
+import google.generativeai as genai
 from datetime import datetime, timedelta
 from dateutil import parser
 from streamlit_js_eval import get_geolocation
@@ -13,7 +13,6 @@ from streamlit_js_eval import get_geolocation
 st.set_page_config(page_title="Departly.ai", page_icon="✈️", layout="centered")
 
 # --- 2. AUTH & MODEL SETUP ---
-# Initialize Firestore
 class FirestoreREST:
     def __init__(self, secrets):
         try:
@@ -73,28 +72,22 @@ class FirestoreREST:
                 results.append(clean_doc)
         return results
 
-# Initialize Services
 try:
-    # 1. Configure Standard Gemini SDK
     genai.configure(api_key=st.secrets["GEMINI_KEY"])
-    
-    # 2. Configure Database
     db_http = FirestoreREST(st.secrets)
 except Exception as e:
     st.error(f"Service Init Error: {e}")
     st.stop()
 
-# --- MODEL FALLBACK LOGIC (The "BiteBot" Way) ---
-# We try Gemini 3 first, then fallback to others if busy
+# --- MODEL FALLBACK LOGIC ---
 AVAILABLE_MODELS = ['gemini-1.5-flash', 'gemini-2.0-flash-exp']
 model = None
 current_engine = ""
 
 for model_name in AVAILABLE_MODELS:
     try:
-        # We use GenerativeModel() here, NOT Client()
         test_model = genai.GenerativeModel(model_name)
-        test_model.count_tokens("Ping")  # Simple test
+        test_model.count_tokens("Ping")
         model = test_model
         current_engine = model_name
         break
@@ -102,7 +95,6 @@ for model_name in AVAILABLE_MODELS:
         continue
 
 if not model:
-    # Final fallback if specific models fail
     model = genai.GenerativeModel('gemini-1.5-flash')
     current_engine = "gemini-1.5-flash (Fallback)"
 
@@ -112,16 +104,107 @@ if 'journey_meta' not in st.session_state: st.session_state.journey_meta = None
 if 'itinerary_data' not in st.session_state: st.session_state.itinerary_data = None
 if 'pickup_address' not in st.session_state: st.session_state.pickup_address = ""
 
-# --- 4. HELPERS (Flight & Maps) ---
+# --- 4. HELPERS & DATA ---
 INDIAN_AIRLINES = {
     "IndiGo": "6E", "Air India": "AI", "Vistara": "UK", 
     "SpiceJet": "SG", "Air India Express": "IX", "Akasa Air": "QP",
     "Alliance Air": "9I", "Star Air": "S5", "Fly91": "IC"
 }
+
+# --- EXTENDED CITY VARIANTS MAPPING ---
 CITY_VARIANTS = {
-    "DEL": ["Delhi", "New Delhi"], "BLR": ["Bengaluru", "Bangalore"],
-    "BOM": ["Mumbai"], "MAA": ["Chennai"], "HYD": ["Hyderabad"],
-    "GOI": ["Goa"], "JAI": ["Jaipur"], "CCU": ["Kolkata"]
+    # Metro Hubs & North
+    "DEL": ["Delhi", "New Delhi", "Noida", "Gurugram", "Greater Noida", "Meerut", "Mathura", "Vrindavan", "Aligarh", "Faridabad"],
+    "AGR": ["Agra", "Fatehpur Sikri", "Mathura", "Vrindavan", "Bharatpur"],
+    "LKO": ["Lucknow", "Ayodhya", "Kanpur", "Naimisharanya"],
+    "VNS": ["Varanasi", "Sarnath", "Mirzapur", "Prayagraj"],
+    "IXD": ["Allahabad", "Prayagraj", "Chitrakoot", "Kaushambi"],
+    "ATQ": ["Amritsar", "Dalhousie", "Pathankot", "Gurdaspur"],
+    "IXC": ["Chandigarh", "Shimla", "Kasauli", "Solan", "Chail", "Parwanoo"],
+    "DED": ["Dehradun", "Mussoorie", "Rishikesh", "Haridwar", "Dhanaulti", "Kanatal", "Tehri"],
+    "PGH": ["Pantnagar", "Nainital", "Jim Corbett", "Ranikhet", "Almora", "Bhimtal", "Mukteshwar"],
+    
+    # Himachal / Mountains (Often accessed via IXC, ATQ or DEL, but if flying to KUU/DHM)
+    "KUU": ["Kullu", "Manali", "Manikaran", "Kasol", "Shoja", "Jibhi", "Tirthan Valley", "Spiti Valley", "Keylong"],
+    "DHM": ["Dharamshala", "McLeod Ganj", "Palampur", "Bir Billing", "Kangra", "Barot"],
+    "SLV": ["Shimla", "Kufri", "Narkanda", "Chail"],
+    
+    # J&K / Ladakh
+    "SXR": ["Srinagar", "Gulmarg", "Pahalgam", "Sonamarg", "Anantnag", "Baramulla"],
+    "IXL": ["Leh", "Nubra Valley", "Pangong Tso", "Kargil", "Diskit", "Hemis", "Dras", "Turtuk"],
+    "IXJ": ["Jammu", "Katra", "Vaishno Devi", "Udhampur", "Patnitop", "Kishtwar"],
+
+    # West (Maharashtra / Gujarat / Goa)
+    "BOM": ["Mumbai", "Lonavala", "Alibaug", "Matheran", "Khandala", "Elephanta Caves", "Igatpuri"],
+    "PNQ": ["Pune", "Lonavala", "Mahabaleshwar", "Lavasa", "Panchgani", "Satara", "Matheran"],
+    "NAG": ["Nagpur", "Pench", "Tadoba"],
+    "IXU": ["Aurangabad", "Ajanta", "Ellora", "Shirdi"],
+    "ISK": ["Nashik", "Shirdi", "Trimbakeshwar", "Igatpuri"],
+    "SAG": ["Shirdi", "Shani Shingnapur"],
+    "KLH": ["Kolhapur", "Panhala"],
+    
+    "AMD": ["Ahmedabad", "Gandhinagar", "Kevadia", "Statue of Unity", "Modhera", "Patan", "Mount Abu"],
+    "STV": ["Surat", "Daman", "Silvassa"],
+    "BDQ": ["Vadodara", "Kevadia", "Champaner"],
+    "RAJ": ["Rajkot"],
+    "JGA": ["Jamnagar", "Dwarka"],
+    "PBD": ["Porbandar", "Dwarka", "Somnath"],
+    "DIU": ["Diu", "Somnath", "Gir National Park"],
+    "BHJ": ["Bhuj", "Rann of Kutch", "Dholavira"],
+    "GOI": ["Goa", "Panjim", "Calangute", "Anjuna", "Dudhsagar", "Madgaon"],
+    "GOX": ["Goa", "North Goa", "Mopa"],
+
+    # Rajasthan
+    "JAI": ["Jaipur", "Pushkar", "Ajmer", "Ranthambore", "Sawai Madhopur", "Alwar", "Bhangarh"],
+    "UDR": ["Udaipur", "Chittorgarh", "Kumbhalgarh", "Mount Abu", "Nathdwara"],
+    "JDH": ["Jodhpur", "Osian", "Khimsar"],
+    "JSA": ["Jaisalmer", "Sam Sand Dunes", "Tanot"],
+    "BKB": ["Bikaner", "Deshnoke"],
+
+    # South (Karnataka / Tamil Nadu / Kerala / AP / Telangana)
+    "BLR": ["Bengaluru", "Bangalore", "Mysore", "Coorg", "Chikmagalur", "Nandi Hills", "Hassan", "Belur", "Halebidu", "Lepakshi"],
+    "IXE": ["Mangalore", "Udupi", "Gokarna", "Murudeshwar", "Bekal", "Coorg", "Dharmasthala"],
+    "MYQ": ["Mysore", "Bandipur", "Kabini", "Nagarhole", "Srirangapatna"],
+    "HBX": ["Hubli", "Hampi", "Badami", "Pattadakal", "Aihole", "Bijapur", "Dandeli"],
+    "MAA": ["Chennai", "Mahabalipuram", "Kanchipuram", "Puducherry", "Auroville", "Tirupati", "Vellore"],
+    "CJB": ["Coimbatore", "Ooty", "Coonoor", "Isha Yoga Center", "Pollachi"],
+    "IXM": ["Madurai", "Rameswaram", "Kodaikanal", "Karaikudi", "Thanjavur"],
+    "TRZ": ["Trichy", "Thanjavur", "Velankanni", "Chidambaram", "Kumbakonam"],
+    "TCR": ["Tuticorin", "Tirunelveli", "Kanyakumari"],
+    "HYD": ["Hyderabad", "Secunderabad", "Warangal", "Srisailam", "Bidar"],
+    "COK": ["Kochi", "Munnar", "Alappuzha", "Thekkady", "Kumarakom", "Thrissur", "Guruvayur"],
+    "TRV": ["Thiruvananthapuram", "Kovalam", "Varkala", "Kanyakumari", "Poovar"],
+    "CCJ": ["Kozhikode", "Wayanad", "Vythiri", "Kannur"],
+    "CNN": ["Kannur", "Bekal", "Coorg"],
+    "VTZ": ["Visakhapatnam", "Araku Valley", "Vizianagaram"],
+    "VGA": ["Vijayawada", "Amaravati", "Guntur"],
+    "TIR": ["Tirupati", "Srikalahasti", "Puttaparthi"],
+    "CDP": ["Kadapa", "Gandikota"],
+    "KJB": ["Kurnool", "Mantralayam"],
+
+    # East & North East
+    "CCU": ["Kolkata", "Sundarbans", "Digha", "Mandarmani", "Bolpur", "Shantiniketan", "Murshidabad", "Mayapur", "Hooghly"],
+    "IXB": ["Bagdogra", "Darjeeling", "Gangtok", "Pelling", "Kalimpong", "Siliguri", "Namchi", "Ravangla", "Lachung"],
+    "GAU": ["Guwahati", "Shillong", "Kaziranga", "Cherrapunji", "Dawki", "Manas", "Hajo", "Kamakhya"],
+    "JRH": ["Jorhat", "Majuli", "Sivasagar", "Kaziranga"],
+    "IXA": ["Agartala", "Unakoti", "Dumboor"],
+    "IXS": ["Silchar"],
+    "IMF": ["Imphal"],
+    "DMU": ["Dimapur", "Kohima", "Dzukou Valley"],
+    "BBI": ["Bhubaneswar", "Puri", "Konark", "Chilika", "Cuttack", "Udayagiri"],
+    "JRG": ["Jharsuguda", "Sambalpur", "Rourkela"],
+    "PAT": ["Patna", "Bodh Gaya", "Nalanda", "Rajgir", "Vaishali"],
+    "IXR": ["Ranchi", "Deoghar", "Netarhat"],
+    "DGR": ["Deoghar", "Baidyanath Dham"],
+
+    # Central India & Islands
+    "BHO": ["Bhopal", "Sanchi", "Bhimbetka", "Pachmarhi"],
+    "IDR": ["Indore", "Ujjain", "Mandu", "Omkareshwar", "Maheshwar"],
+    "JLR": ["Jabalpur", "Kanha", "Bandhavgarh", "Bhedaghat", "Amarkantak"],
+    "GWL": ["Gwalior", "Orchha", "Jhansi", "Shivpuri"],
+    "HJR": ["Khajuraho", "Panna"],
+    "RPR": ["Raipur", "Bastar", "Jagdalpur", "Chitrakoot Falls"],
+    "IXZ": ["Port Blair", "Havelock Island", "Neil Island", "Baratang Island", "Ross Island"]
 }
 
 def get_flight_data(iata_code):
@@ -175,7 +258,6 @@ def reverse_geocode(lat, lng):
 st.title("✈️ Departly.ai")
 st.caption(f"Engine: {current_engine}")
 
-# Invisible GPS
 loc_data = get_geolocation(component_key='gps_trigger')
 if loc_data and 'coords' in loc_data:
     lat = loc_data['coords']['latitude']
@@ -183,7 +265,6 @@ if loc_data and 'coords' in loc_data:
     if not st.session_state.pickup_address:
         st.session_state.pickup_address = reverse_geocode(lat, lng)
 
-# Inputs
 col1, col2 = st.columns([1, 1])
 with col1:
     airline_name = st.selectbox("Select Airline", list(INDIAN_AIRLINES.keys()))
@@ -194,7 +275,6 @@ p_in = st.text_input("Pickup Point", value=st.session_state.pickup_address, plac
 if p_in != st.session_state.pickup_address: st.session_state.pickup_address = p_in
 airline_code = INDIAN_AIRLINES[airline_name]
 
-# Calculate Button
 if st.button("Calculate Journey", type="primary", use_container_width=True):
     if not (flight_num and p_in):
         st.warning("Please enter both details.")
@@ -217,12 +297,10 @@ if st.button("Calculate Journey", type="primary", use_container_width=True):
                     "takeoff": parser.parse(flight['dep_time']).strftime('%I:%M %p'),
                     "landing": parser.parse(flight['arr_time']).strftime('%I:%M %p')
                 }
-                # Clear old itinerary if flight changes
                 st.session_state.itinerary_data = None
             else:
                 st.error("Flight not found.")
 
-# Display Journey
 if st.session_state.journey_meta:
     j = st.session_state.journey_meta
     st.markdown("---")
@@ -239,7 +317,7 @@ if st.session_state.journey_meta:
         st.write("🛂 **Security & Baggage:** 30 mins")
         st.write("✈️ **Gate Close:** 45 mins")
 
-# --- 6. ITINERARY SECTION (BiteBot Style) ---
+# --- 6. ITINERARY SECTION ---
 if st.session_state.flight_info:
     st.markdown("---")
     display = st.session_state.flight_info['display']
@@ -256,7 +334,6 @@ if st.session_state.flight_info:
             
             context = "\n".join([f"• {d.get('Name')} ({d.get('Type')})" for d in rag_docs]) if rag_docs else "No specific database data."
             
-            # Use 'BiteBot' style JSON prompting
             prompt = f"""
             Act as a travel API. Create a {days}-day itinerary for {display}.
             Use these local recommendations if possible: {context}
@@ -275,24 +352,18 @@ if st.session_state.flight_info:
             """
             
             try:
-                # 1. Generate Content (Standard Method)
                 response = model.generate_content(
                     prompt,
                     generation_config={"response_mime_type": "application/json"}
                 )
-                
-                # 2. Parse JSON
                 data = json.loads(response.text)
                 st.session_state.itinerary_data = data
-                
             except Exception as e:
                 st.error(f"Generation Error: {e}")
 
-# --- 7. DISPLAY ITINERARY ---
 if st.session_state.itinerary_data:
     data = st.session_state.itinerary_data
     st.markdown(f"### {data.get('title', 'Your Itinerary')}")
-    
     for day in data.get('days', []):
         with st.expander(f"Day {day['day']}: {day['theme']}", expanded=True):
             for activity in day.get('activities', []):
