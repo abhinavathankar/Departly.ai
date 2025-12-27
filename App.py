@@ -4,7 +4,7 @@ import json
 import time
 import google.auth.transport.requests
 from google.oauth2 import service_account
-import google.generativeai as genai
+import google.generativeai as genai  # Standard Library
 from datetime import datetime, timedelta
 from dateutil import parser
 from streamlit_js_eval import get_geolocation
@@ -12,7 +12,7 @@ from streamlit_js_eval import get_geolocation
 # --- 1. CONFIGURATION ---
 st.set_page_config(page_title="Departly.ai", page_icon="✈️", layout="centered")
 
-# --- 2. AUTH & MODEL SELECTION (ROBUST PATTERN) ---
+# --- 2. AUTH & MODEL SETUP ---
 # Initialize Firestore
 class FirestoreREST:
     def __init__(self, secrets):
@@ -73,24 +73,28 @@ class FirestoreREST:
                 results.append(clean_doc)
         return results
 
-# Initialize Gemini with Fallback Logic
+# Initialize Services
 try:
+    # 1. Configure Standard Gemini SDK
     genai.configure(api_key=st.secrets["GEMINI_KEY"])
+    
+    # 2. Configure Database
     db_http = FirestoreREST(st.secrets)
 except Exception as e:
-    st.error(f"Secret Error: {e}")
+    st.error(f"Service Init Error: {e}")
     st.stop()
 
-# --- MODEL FALLBACK LOGIC ---
-AVAILABLE_MODELS = ['gemini-3-flash-preview', 'gemini-2.0-flash-exp', 'gemini-1.5-flash']
+# --- MODEL FALLBACK LOGIC (The "BiteBot" Way) ---
+# We try Gemini 3 first, then fallback to others if busy
+AVAILABLE_MODELS = ['gemini-1.5-flash', 'gemini-2.0-flash-exp']
 model = None
 current_engine = ""
 
 for model_name in AVAILABLE_MODELS:
     try:
-        # Test the model with a tiny request to check quota/availability
+        # We use GenerativeModel() here, NOT Client()
         test_model = genai.GenerativeModel(model_name)
-        test_model.count_tokens("Ping") 
+        test_model.count_tokens("Ping")  # Simple test
         model = test_model
         current_engine = model_name
         break
@@ -98,16 +102,17 @@ for model_name in AVAILABLE_MODELS:
         continue
 
 if not model:
-    st.error("⚠️ All AI models are currently busy. Please check your API quota.")
-    st.stop()
+    # Final fallback if specific models fail
+    model = genai.GenerativeModel('gemini-1.5-flash')
+    current_engine = "gemini-1.5-flash (Fallback)"
 
-# --- 3. SESSION STATE SETUP ---
+# --- 3. SESSION STATE ---
 if 'flight_info' not in st.session_state: st.session_state.flight_info = None
 if 'journey_meta' not in st.session_state: st.session_state.journey_meta = None
 if 'itinerary_data' not in st.session_state: st.session_state.itinerary_data = None
 if 'pickup_address' not in st.session_state: st.session_state.pickup_address = ""
 
-# --- 4. HELPERS ---
+# --- 4. HELPERS (Flight & Maps) ---
 INDIAN_AIRLINES = {
     "IndiGo": "6E", "Air India": "AI", "Vistara": "UK", 
     "SpiceJet": "SG", "Air India Express": "IX", "Akasa Air": "QP",
@@ -168,7 +173,7 @@ def reverse_geocode(lat, lng):
 
 # --- 5. MAIN UI ---
 st.title("✈️ Departly.ai")
-st.caption(f"Powered by: {current_engine}")
+st.caption(f"Engine: {current_engine}")
 
 # Invisible GPS
 loc_data = get_geolocation(component_key='gps_trigger')
@@ -234,7 +239,7 @@ if st.session_state.journey_meta:
         st.write("🛂 **Security & Baggage:** 30 mins")
         st.write("✈️ **Gate Close:** 45 mins")
 
-# --- 6. ITINERARY SECTION (ROBUST & JSON) ---
+# --- 6. ITINERARY SECTION (BiteBot Style) ---
 if st.session_state.flight_info:
     st.markdown("---")
     display = st.session_state.flight_info['display']
@@ -251,7 +256,7 @@ if st.session_state.flight_info:
             
             context = "\n".join([f"• {d.get('Name')} ({d.get('Type')})" for d in rag_docs]) if rag_docs else "No specific database data."
             
-            # Strict JSON Prompt
+            # Use 'BiteBot' style JSON prompting
             prompt = f"""
             Act as a travel API. Create a {days}-day itinerary for {display}.
             Use these local recommendations if possible: {context}
@@ -270,13 +275,13 @@ if st.session_state.flight_info:
             """
             
             try:
-                # 1. Generate strictly as JSON
+                # 1. Generate Content (Standard Method)
                 response = model.generate_content(
-                    prompt, 
+                    prompt,
                     generation_config={"response_mime_type": "application/json"}
                 )
                 
-                # 2. Parse and Store in Session
+                # 2. Parse JSON
                 data = json.loads(response.text)
                 st.session_state.itinerary_data = data
                 
