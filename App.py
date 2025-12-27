@@ -83,7 +83,7 @@ except Exception as e:
     st.error(f"Service Init Error: {e}")
 
 # --- SETTINGS ---
-# Using the Stable Production Model to avoid 429 Limit 0 errors
+# Use Stable Model to prevent 429 errors
 MODEL_ID = 'gemini-1.5-flash' 
 
 INDIAN_AIRLINES = {
@@ -145,11 +145,11 @@ def reverse_geocode(lat, lng):
     except: pass
     return f"{lat},{lng}"
 
-# --- UPDATED HELPER: ROBUST RETRY LOGIC ---
+# --- UPDATED RETRY LOGIC (NO IMPORT REQUIRED) ---
 def generate_with_retry(client, model_id, prompt, max_retries=3):
     """
-    Attempts to generate content with exponential backoff.
-    Uses string checking to avoid import errors.
+    Robust generation that catches errors by name to avoid 
+    'ModuleNotFoundError' crashes.
     """
     base_delay = 2 
     
@@ -161,8 +161,10 @@ def generate_with_retry(client, model_id, prompt, max_retries=3):
             )
         except Exception as e:
             error_str = str(e)
-            # Check for 429 / Resource Exhausted errors
-            if "429" in error_str or "ResourceExhausted" in type(e).__name__:
+            error_type = type(e).__name__
+            
+            # Check for Resource Exhausted / 429
+            if "429" in error_str or "ResourceExhausted" in error_type:
                 if attempt == max_retries - 1:
                     st.error(f"⚠️ Quota exceeded on {model_id}. Please try again later.")
                     return None
@@ -171,7 +173,7 @@ def generate_with_retry(client, model_id, prompt, max_retries=3):
                 st.toast(f"⏳ High traffic. Retrying in {wait_time}s...", icon="🔄")
                 time.sleep(wait_time)
             else:
-                # If it's a different error, stop retrying
+                # If it's a real API error, show it
                 st.error(f"❌ API Error: {e}")
                 return None
     return None
@@ -256,7 +258,7 @@ if st.session_state.journey_meta:
         st.write(f"🛂 **Security & Baggage Drop:** 30 mins")
         st.write(f"✈️ **Boarding Gate Close:** 45 mins")
 
-# --- 5. ITINERARY SECTION (Updated) ---
+# --- 5. ITINERARY SECTION ---
 if st.session_state.flight_info:
     st.markdown("---")
     targets = st.session_state.flight_info['targets']
@@ -264,12 +266,9 @@ if st.session_state.flight_info:
     st.subheader(f"🗺️ Plan Trip: {display}")
     days = st.slider("Trip Duration (Days)", 1, 7, 3)
     
-    # Using the stable model defined at the top
-    CURRENT_MODEL = MODEL_ID
-    
     if st.button(f"Generate Itinerary (Gemini)", use_container_width=True):
         
-        with st.spinner(f"Creating itinerary using {CURRENT_MODEL}..."):
+        with st.spinner(f"Creating itinerary..."):
             # 1. RAG Retrieval
             rag_docs = []
             for city in targets:
@@ -289,7 +288,7 @@ if st.session_state.flight_info:
                 """
                 
                 # 2. Call AI with Retry Handler
-                res = generate_with_retry(client, CURRENT_MODEL, prompt)
+                res = generate_with_retry(client, MODEL_ID, prompt)
                 
                 if res:
                     st.markdown("### ✨ Your Verified Itinerary")
