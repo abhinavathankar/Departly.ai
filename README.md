@@ -28,5 +28,5 @@ Architecture: RESTful API Integration
 2. You will get the flight details and suggested time to leave your location. This uses Google Maps API to indentify the time it will take you to travel to the flight origin airport. 
 <img width="925" height="691" alt="image" src="https://github.com/user-attachments/assets/78c9de33-e6c9-4f4a-bf46-3feb133e24a3" />
 
-3. Select number of days you are planning to stay, AI will use dedicated must visit places Data base to provide you with the best travel itinerary 
+3. Select number of days you are planning to stay, AI will use dedicated must visit places Data base to provide you with the best travel itinerary. 
 <img width="967" height="680" alt="image" src="https://github.com/user-attachments/assets/60fab28e-db40-4a87-9bb0-44d518f80238" />
