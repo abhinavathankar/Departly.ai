@@ -2,10 +2,10 @@
 
 **Link:** https://departlyai.streamlit.app/
 
-<img width="1400" height="850" alt="is" src="https://github.com/user-attachments/assets/425cbf26-2e99-4e19-aa4e-06d325a2548d" />
-
 Departly.ai is a streamlined travel assistant designed to solve the two biggest pain points of air travel: "Airport Math" anxiety (knowing exactly when to leave) and Destination Planning.
 By orchestration real-time flight data, live traffic telemetry, and Generative AI, Departly eliminates the guesswork of travel day logistics. It doesn't just track your flight; it reverse-engineers your schedule to ensure you never miss a boarding call, then seamlessly pivots to planning your trip upon arrival using verified local data.
+
+<img width="1400" height="850" alt="is" src="https://github.com/user-attachments/assets/425cbf26-2e99-4e19-aa4e-06d325a2548d" />
 
 **Core Capabilities**
 Predictive Logistics Engine The application ingests live flight manifests via the AirLabs API. It correlates this data with real-time traffic latency from Google Maps. The system utilizes a deterministic algorithm to calculate precise departure windows. This logic optimizes the time-to-gate metric and mitigates travel anxiety.
