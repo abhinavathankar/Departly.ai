@@ -1,9 +1,11 @@
 import streamlit as st
 import requests
 import json
+import time
 import google.auth.transport.requests
 from google.oauth2 import service_account
 from google import genai
+from google.api_core import exceptions
 from datetime import datetime, timedelta
 from dateutil import parser
 from streamlit_js_eval import get_geolocation
@@ -82,7 +84,7 @@ except Exception as e:
     st.error(f"Service Init Error: {e}")
 
 # --- SETTINGS ---
-# UPDATED: Using the latest Gemini 3 Flash model (released Dec 2025)
+# UPDATED: Using the latest Gemini 3 Flash model (Released Dec 2025)
 MODEL_ID = 'gemini-3-flash-preview' 
 
 INDIAN_AIRLINES = {
@@ -143,6 +145,32 @@ def reverse_geocode(lat, lng):
             return data['results'][0]['formatted_address']
     except: pass
     return f"{lat},{lng}"
+
+# --- NEW HELPER: RETRY LOGIC ---
+def generate_with_retry(client, model_id, prompt, max_retries=3):
+    """
+    Attempts to generate content with exponential backoff.
+    Essential for Preview models which may have volatile capacity.
+    """
+    base_delay = 2  # Start with 2 seconds
+    
+    for attempt in range(max_retries):
+        try:
+            return client.models.generate_content(
+                model=model_id, 
+                contents=prompt
+            )
+        except exceptions.ResourceExhausted:
+            if attempt == max_retries - 1:
+                st.error(f"⚠️ Quota exceeded on {model_id}. High network traffic.")
+                return None
+            wait_time = base_delay * (2 ** attempt)
+            st.toast(f"⏳ Scaling up Gemini 3... (Retry {attempt+1}/{max_retries})", icon="🔄")
+            time.sleep(wait_time)
+        except Exception as e:
+            st.error(f"❌ Unexpected Error: {e}")
+            return None
+    return None
 
 # --- 4. MAIN UI ---
 st.title("✈️ Departly.ai")
@@ -224,7 +252,7 @@ if st.session_state.journey_meta:
         st.write(f"🛂 **Security & Baggage Drop:** 30 mins")
         st.write(f"✈️ **Boarding Gate Close:** 45 mins")
 
-# --- 5. ITINERARY SECTION ---
+# --- 5. ITINERARY SECTION (GEMINI 3 ENABLED) ---
 if st.session_state.flight_info:
     st.markdown("---")
     targets = st.session_state.flight_info['targets']
@@ -232,21 +260,30 @@ if st.session_state.flight_info:
     st.subheader(f"🗺️ Plan Trip: {display}")
     days = st.slider("Trip Duration (Days)", 1, 7, 3)
     
-    if st.button(f"Generate Itinerary (Gemini 3)", use_container_width=True):
-        with st.spinner("Creating your custom itinerary..."):
+    if st.button(f"Generate Itinerary (Gemini 3 Flash)", use_container_width=True):
+        with st.spinner("Accessing Gemini 3 Knowledge Base..."):
+            # 1. RAG Retrieval
             rag_docs = []
             for city in targets:
                 rag_docs.extend(db_http.query_city(city.strip()))
             
+            #  
+            
             if rag_docs:
                 context = "\n".join([f"• {d.get('Name')} ({d.get('Type')})" for d in rag_docs])
-                prompt = f"Create a {days}-day itinerary for {display} using only this data:\n{context}"
-                try:
-                    # Using the client initialized with Gemini 3 Flash
-                    res = client.models.generate_content(model=MODEL_ID, contents=prompt)
+                prompt = f"""
+                You are an expert travel agent. Create a {days}-day itinerary for {display}.
+                Strictly use the following local recommendations if relevant:
+                {context}
+                
+                Format the response with Markdown, using emojis for each section.
+                """
+                
+                # 2. Generation with Gemini 3
+                res = generate_with_retry(client, MODEL_ID, prompt)
+                
+                if res:
                     st.markdown("### ✨ Your Verified Itinerary")
                     st.markdown(res.text)
-                except Exception as e:
-                    st.error(f"AI Error: {e}")
             else:
                 st.warning("No database records found for this city.")
