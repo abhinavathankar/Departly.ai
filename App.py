@@ -12,7 +12,8 @@ from streamlit_js_eval import get_geolocation
 # --- 1. CONFIGURATION ---
 st.set_page_config(page_title="Departly.ai", page_icon="✈️", layout="centered")
 
-# --- 2. HTTP CLIENT ---
+# --- 2. AUTH & MODEL SELECTION (ROBUST PATTERN) ---
+# Initialize Firestore
 class FirestoreREST:
     def __init__(self, secrets):
         try:
@@ -72,20 +73,41 @@ class FirestoreREST:
                 results.append(clean_doc)
         return results
 
-@st.cache_resource
-def get_db_client():
-    return FirestoreREST(st.secrets)
-
+# Initialize Gemini with Fallback Logic
 try:
-    db_http = get_db_client()
-    client = genai.Client(api_key=st.secrets["GEMINI_KEY"])
+    genai.configure(api_key=st.secrets["GEMINI_KEY"])
+    db_http = FirestoreREST(st.secrets)
 except Exception as e:
-    st.error(f"Service Init Error: {e}")
+    st.error(f"Secret Error: {e}")
+    st.stop()
 
-# --- SETTINGS ---
-# Use Stable Model to prevent 429 errors
-MODEL_ID = 'gemini-3-flash-preview' 
+# --- MODEL FALLBACK LOGIC ---
+AVAILABLE_MODELS = ['gemini-3-flash-preview', 'gemini-2.0-flash-exp', 'gemini-1.5-flash']
+model = None
+current_engine = ""
 
+for model_name in AVAILABLE_MODELS:
+    try:
+        # Test the model with a tiny request to check quota/availability
+        test_model = genai.GenerativeModel(model_name)
+        test_model.count_tokens("Ping") 
+        model = test_model
+        current_engine = model_name
+        break
+    except Exception:
+        continue
+
+if not model:
+    st.error("⚠️ All AI models are currently busy. Please check your API quota.")
+    st.stop()
+
+# --- 3. SESSION STATE SETUP ---
+if 'flight_info' not in st.session_state: st.session_state.flight_info = None
+if 'journey_meta' not in st.session_state: st.session_state.journey_meta = None
+if 'itinerary_data' not in st.session_state: st.session_state.itinerary_data = None
+if 'pickup_address' not in st.session_state: st.session_state.pickup_address = ""
+
+# --- 4. HELPERS ---
 INDIAN_AIRLINES = {
     "IndiGo": "6E", "Air India": "AI", "Vistara": "UK", 
     "SpiceJet": "SG", "Air India Express": "IX", "Akasa Air": "QP",
@@ -97,7 +119,6 @@ CITY_VARIANTS = {
     "GOI": ["Goa"], "JAI": ["Jaipur"], "CCU": ["Kolkata"]
 }
 
-# --- 3. HELPERS ---
 def get_flight_data(iata_code):
     clean_iata = iata_code.replace(" ", "").upper()
     url = f"https://airlabs.co/api/v9/schedules?flight_iata={clean_iata}&api_key={st.secrets['AIRLABS_KEY']}"
@@ -145,48 +166,11 @@ def reverse_geocode(lat, lng):
     except: pass
     return f"{lat},{lng}"
 
-# --- UPDATED RETRY LOGIC (NO IMPORT REQUIRED) ---
-def generate_with_retry(client, model_id, prompt, max_retries=3):
-    """
-    Robust generation that catches errors by name to avoid 
-    'ModuleNotFoundError' crashes.
-    """
-    base_delay = 2 
-    
-    for attempt in range(max_retries):
-        try:
-            return client.models.generate_content(
-                model=model_id, 
-                contents=prompt
-            )
-        except Exception as e:
-            error_str = str(e)
-            error_type = type(e).__name__
-            
-            # Check for Resource Exhausted / 429
-            if "429" in error_str or "ResourceExhausted" in error_type:
-                if attempt == max_retries - 1:
-                    st.error(f"⚠️ Quota exceeded on {model_id}. Please try again later.")
-                    return None
-                
-                wait_time = base_delay * (2 ** attempt)
-                st.toast(f"⏳ High traffic. Retrying in {wait_time}s...", icon="🔄")
-                time.sleep(wait_time)
-            else:
-                # If it's a real API error, show it
-                st.error(f"❌ API Error: {e}")
-                return None
-    return None
-
-# --- 4. MAIN UI ---
+# --- 5. MAIN UI ---
 st.title("✈️ Departly.ai")
+st.caption(f"Powered by: {current_engine}")
 
-# PERSISTENT DATA
-if 'flight_info' not in st.session_state: st.session_state.flight_info = None
-if 'journey_meta' not in st.session_state: st.session_state.journey_meta = None
-if 'pickup_address' not in st.session_state: st.session_state.pickup_address = ""
-
-# --- INVISIBLE GPS LOGIC ---
+# Invisible GPS
 loc_data = get_geolocation(component_key='gps_trigger')
 if loc_data and 'coords' in loc_data:
     lat = loc_data['coords']['latitude']
@@ -194,30 +178,24 @@ if loc_data and 'coords' in loc_data:
     if not st.session_state.pickup_address:
         st.session_state.pickup_address = reverse_geocode(lat, lng)
 
-# --- INPUTS ---
+# Inputs
 col1, col2 = st.columns([1, 1])
 with col1:
     airline_name = st.selectbox("Select Airline", list(INDIAN_AIRLINES.keys()))
 with col2:
     flight_num = st.text_input("Flight Number", placeholder="e.g. 6433")
 
-p_in = st.text_input("Pickup Point", 
-                     value=st.session_state.pickup_address, 
-                     placeholder="e.g. Hoodi, Bangalore")
-
-if p_in != st.session_state.pickup_address:
-    st.session_state.pickup_address = p_in
-
+p_in = st.text_input("Pickup Point", value=st.session_state.pickup_address, placeholder="e.g. Hoodi, Bangalore")
+if p_in != st.session_state.pickup_address: st.session_state.pickup_address = p_in
 airline_code = INDIAN_AIRLINES[airline_name]
 
-# -----------------------------
-
+# Calculate Button
 if st.button("Calculate Journey", type="primary", use_container_width=True):
     if not (flight_num and p_in):
         st.warning("Please enter both details.")
     else:
         full_flight_code = f"{airline_code}{flight_num}"
-        with st.spinner(f"Analyzing {full_flight_code}..."):
+        with st.spinner(f"Tracking {full_flight_code}..."):
             flight = get_flight_data(full_flight_code)
             if flight:
                 traffic = get_traffic(p_in, flight['origin_code'])
@@ -234,64 +212,83 @@ if st.button("Calculate Journey", type="primary", use_container_width=True):
                     "takeoff": parser.parse(flight['dep_time']).strftime('%I:%M %p'),
                     "landing": parser.parse(flight['arr_time']).strftime('%I:%M %p')
                 }
+                # Clear old itinerary if flight changes
+                st.session_state.itinerary_data = None
             else:
                 st.error("Flight not found.")
 
-# --- DISPLAY JOURNEY ---
+# Display Journey
 if st.session_state.journey_meta:
     j = st.session_state.journey_meta
     st.markdown("---")
-    st.subheader(f"🎫 Flight Dashboard")
-    
+    st.subheader("🎫 Flight Dashboard")
     c1, c2 = st.columns(2)
     c1.metric("From", j["dep_iata"])
     c2.metric("To", j["arr_iata"])
-    
     c3, c4 = st.columns(2)
     c3.metric("Takeoff", j["takeoff"])
     c4.metric("Landing", j["landing"])
-
     st.success(f"### 🚪 Leave Home by: **{j['leave_time']}**")
-    
-    with st.expander("⏱️ Journey Breakdown", expanded=True):
+    with st.expander("⏱️ Journey Breakdown", expanded=False):
         st.write(f"🚗 **Travel to Airport:** {j['traffic_txt']}")
-        st.write(f"🛂 **Security & Baggage Drop:** 30 mins")
-        st.write(f"✈️ **Boarding Gate Close:** 45 mins")
+        st.write("🛂 **Security & Baggage:** 30 mins")
+        st.write("✈️ **Gate Close:** 45 mins")
 
-# --- 5. ITINERARY SECTION ---
+# --- 6. ITINERARY SECTION (ROBUST & JSON) ---
 if st.session_state.flight_info:
     st.markdown("---")
-    targets = st.session_state.flight_info['targets']
     display = st.session_state.flight_info['display']
     st.subheader(f"🗺️ Plan Trip: {display}")
+    
     days = st.slider("Trip Duration (Days)", 1, 7, 3)
     
-    if st.button(f"Generate Itinerary (Gemini)", use_container_width=True):
-        
-        with st.spinner(f"Creating itinerary..."):
-            # 1. RAG Retrieval
+    if st.button("Generate Itinerary", use_container_width=True):
+        with st.spinner(f"Designing trip with {current_engine}..."):
             rag_docs = []
-            for city in targets:
-                try:
-                    rag_docs.extend(db_http.query_city(city.strip()))
-                except:
-                    pass
+            for city in st.session_state.flight_info['targets']:
+                try: rag_docs.extend(db_http.query_city(city.strip()))
+                except: pass
             
-            if rag_docs:
-                context = "\n".join([f"• {d.get('Name')} ({d.get('Type')})" for d in rag_docs])
-                prompt = f"""
-                You are an expert travel agent. Create a {days}-day itinerary for {display}.
-                Strictly use the following local recommendations if relevant:
-                {context}
+            context = "\n".join([f"• {d.get('Name')} ({d.get('Type')})" for d in rag_docs]) if rag_docs else "No specific database data."
+            
+            # Strict JSON Prompt
+            prompt = f"""
+            Act as a travel API. Create a {days}-day itinerary for {display}.
+            Use these local recommendations if possible: {context}
+
+            Return a strict JSON OBJECT with this structure:
+            {{
+                "title": "Trip Title",
+                "days": [
+                    {{
+                        "day": 1,
+                        "theme": "Theme of day",
+                        "activities": ["Activity 1", "Activity 2"]
+                    }}
+                ]
+            }}
+            """
+            
+            try:
+                # 1. Generate strictly as JSON
+                response = model.generate_content(
+                    prompt, 
+                    generation_config={"response_mime_type": "application/json"}
+                )
                 
-                Format the response with Markdown, using emojis for each section.
-                """
+                # 2. Parse and Store in Session
+                data = json.loads(response.text)
+                st.session_state.itinerary_data = data
                 
-                # 2. Call AI with Retry Handler
-                res = generate_with_retry(client, MODEL_ID, prompt)
-                
-                if res:
-                    st.markdown("### ✨ Your Verified Itinerary")
-                    st.markdown(res.text)
-            else:
-                st.warning("No database records found for this city. Try a major city like 'DEL' or 'BLR' to test.")
+            except Exception as e:
+                st.error(f"Generation Error: {e}")
+
+# --- 7. DISPLAY ITINERARY ---
+if st.session_state.itinerary_data:
+    data = st.session_state.itinerary_data
+    st.markdown(f"### {data.get('title', 'Your Itinerary')}")
+    
+    for day in data.get('days', []):
+        with st.expander(f"Day {day['day']}: {day['theme']}", expanded=True):
+            for activity in day.get('activities', []):
+                st.write(f"• {activity}")
