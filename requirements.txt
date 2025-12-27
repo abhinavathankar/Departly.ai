@@ -1,6 +1,7 @@
 streamlit
-requests
-google-genai
+google-generativeai
+google-api-python-client
 google-auth
+requests
 python-dateutil
 streamlit-js-eval
