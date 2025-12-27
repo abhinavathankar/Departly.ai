@@ -25,7 +25,7 @@ Architecture: RESTful API Integration
 1. Enter the flight details and your location/give application the permission to access your location. Click on Calculate Journey.
 <img width="940" height="487" alt="image" src="https://github.com/user-attachments/assets/a8324a75-3f96-4ec4-abc8-ec9d9979ffc9" />
 
-2.You will get the flight details and suggested time to leave your location. This uses Google Maps API to indentify the time it will take you to travel to the flight origin airport. 
+2. You will get the flight details and suggested time to leave your location. This uses Google Maps API to indentify the time it will take you to travel to the flight origin airport. 
 <img width="925" height="691" alt="image" src="https://github.com/user-attachments/assets/78c9de33-e6c9-4f4a-bf46-3feb133e24a3" />
 
 3. Select number of days you are planning to stay, AI will use dedicated must visit places Data base to provide you with the best travel itinerary 
