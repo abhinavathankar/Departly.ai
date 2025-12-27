@@ -20,3 +20,8 @@ Model: Google Gemini 3 Flash
 Data Store: Google Firestore (NoSQL)
 Telemetry: AirLabs, Google Distance Matrix
 Architecture: RESTful API Integration
+
+**Example:**
+<img width="940" height="487" alt="image" src="https://github.com/user-attachments/assets/a8324a75-3f96-4ec4-abc8-ec9d9979ffc9" />
+<img width="925" height="691" alt="image" src="https://github.com/user-attachments/assets/78c9de33-e6c9-4f4a-bf46-3feb133e24a3" />
+<img width="967" height="680" alt="image" src="https://github.com/user-attachments/assets/60fab28e-db40-4a87-9bb0-44d518f80238" />
