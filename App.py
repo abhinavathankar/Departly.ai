@@ -84,7 +84,7 @@ except Exception as e:
 
 # --- SETTINGS ---
 # Use Stable Model to prevent 429 errors
-MODEL_ID = 'gemini-1.5-flash' 
+MODEL_ID = 'gemini-3-flash-preview' 
 
 INDIAN_AIRLINES = {
     "IndiGo": "6E", "Air India": "AI", "Vistara": "UK", 
