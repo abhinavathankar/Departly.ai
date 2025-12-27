@@ -4,7 +4,7 @@ import json
 import time
 import google.auth.transport.requests
 from google.oauth2 import service_account
-from google import genai
+import google.generativeai as genai
 from datetime import datetime, timedelta
 from dateutil import parser
 from streamlit_js_eval import get_geolocation
