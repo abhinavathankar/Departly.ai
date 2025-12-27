@@ -5,7 +5,6 @@ import time
 import google.auth.transport.requests
 from google.oauth2 import service_account
 from google import genai
-from google.api_core import exceptions
 from datetime import datetime, timedelta
 from dateutil import parser
 from streamlit_js_eval import get_geolocation
@@ -84,8 +83,8 @@ except Exception as e:
     st.error(f"Service Init Error: {e}")
 
 # --- SETTINGS ---
-# UPDATED: Using the latest Gemini 3 Flash model (Released Dec 2025)
-MODEL_ID = 'gemini-3-flash-preview' 
+# Using the Stable Production Model to avoid 429 Limit 0 errors
+MODEL_ID = 'gemini-1.5-flash' 
 
 INDIAN_AIRLINES = {
     "IndiGo": "6E", "Air India": "AI", "Vistara": "UK", 
@@ -146,13 +145,13 @@ def reverse_geocode(lat, lng):
     except: pass
     return f"{lat},{lng}"
 
-# --- NEW HELPER: RETRY LOGIC ---
+# --- UPDATED HELPER: ROBUST RETRY LOGIC ---
 def generate_with_retry(client, model_id, prompt, max_retries=3):
     """
     Attempts to generate content with exponential backoff.
-    Essential for Preview models which may have volatile capacity.
+    Uses string checking to avoid import errors.
     """
-    base_delay = 2  # Start with 2 seconds
+    base_delay = 2 
     
     for attempt in range(max_retries):
         try:
@@ -160,16 +159,21 @@ def generate_with_retry(client, model_id, prompt, max_retries=3):
                 model=model_id, 
                 contents=prompt
             )
-        except exceptions.ResourceExhausted:
-            if attempt == max_retries - 1:
-                st.error(f"⚠️ Quota exceeded on {model_id}. High network traffic.")
-                return None
-            wait_time = base_delay * (2 ** attempt)
-            st.toast(f"⏳ Scaling up Gemini 3... (Retry {attempt+1}/{max_retries})", icon="🔄")
-            time.sleep(wait_time)
         except Exception as e:
-            st.error(f"❌ Unexpected Error: {e}")
-            return None
+            error_str = str(e)
+            # Check for 429 / Resource Exhausted errors
+            if "429" in error_str or "ResourceExhausted" in type(e).__name__:
+                if attempt == max_retries - 1:
+                    st.error(f"⚠️ Quota exceeded on {model_id}. Please try again later.")
+                    return None
+                
+                wait_time = base_delay * (2 ** attempt)
+                st.toast(f"⏳ High traffic. Retrying in {wait_time}s...", icon="🔄")
+                time.sleep(wait_time)
+            else:
+                # If it's a different error, stop retrying
+                st.error(f"❌ API Error: {e}")
+                return None
     return None
 
 # --- 4. MAIN UI ---
@@ -252,7 +256,7 @@ if st.session_state.journey_meta:
         st.write(f"🛂 **Security & Baggage Drop:** 30 mins")
         st.write(f"✈️ **Boarding Gate Close:** 45 mins")
 
-# --- 5. ITINERARY SECTION (GEMINI 3 ENABLED) ---
+# --- 5. ITINERARY SECTION (Updated) ---
 if st.session_state.flight_info:
     st.markdown("---")
     targets = st.session_state.flight_info['targets']
@@ -260,14 +264,19 @@ if st.session_state.flight_info:
     st.subheader(f"🗺️ Plan Trip: {display}")
     days = st.slider("Trip Duration (Days)", 1, 7, 3)
     
-    if st.button(f"Generate Itinerary (Gemini 3 Flash)", use_container_width=True):
-        with st.spinner("Accessing Gemini 3 Knowledge Base..."):
+    # Using the stable model defined at the top
+    CURRENT_MODEL = MODEL_ID
+    
+    if st.button(f"Generate Itinerary (Gemini)", use_container_width=True):
+        
+        with st.spinner(f"Creating itinerary using {CURRENT_MODEL}..."):
             # 1. RAG Retrieval
             rag_docs = []
             for city in targets:
-                rag_docs.extend(db_http.query_city(city.strip()))
-            
-            #  
+                try:
+                    rag_docs.extend(db_http.query_city(city.strip()))
+                except:
+                    pass
             
             if rag_docs:
                 context = "\n".join([f"• {d.get('Name')} ({d.get('Type')})" for d in rag_docs])
@@ -279,11 +288,11 @@ if st.session_state.flight_info:
                 Format the response with Markdown, using emojis for each section.
                 """
                 
-                # 2. Generation with Gemini 3
-                res = generate_with_retry(client, MODEL_ID, prompt)
+                # 2. Call AI with Retry Handler
+                res = generate_with_retry(client, CURRENT_MODEL, prompt)
                 
                 if res:
                     st.markdown("### ✨ Your Verified Itinerary")
                     st.markdown(res.text)
             else:
-                st.warning("No database records found for this city.")
+                st.warning("No database records found for this city. Try a major city like 'DEL' or 'BLR' to test.")
